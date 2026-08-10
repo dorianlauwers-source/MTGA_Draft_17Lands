@@ -9,9 +9,10 @@ resizing and alternating rows come from Qt's model/view rather than the ~630
 lines of ttk.Treeview subclassing upstream needs for the same result.
 """
 
-from PyQt6.QtCore import QAbstractTableModel, QModelIndex, Qt, QSortFilterProxyModel
+from PyQt6.QtCore import (QAbstractTableModel, QModelIndex, Qt,
+                          QSortFilterProxyModel, pyqtSignal)
 from PyQt6.QtGui import QColor, QFont
-from PyQt6.QtWidgets import QHeaderView, QTreeView
+from PyQt6.QtWidgets import QHeaderView, QMenu, QTreeView
 
 from src import constants
 
@@ -210,8 +211,19 @@ class PackTableModel(QAbstractTableModel):
         return "<br>".join(lines)
 
 
+# Columns you cannot hide: without them the table says nothing.
+MANDATORY_COLUMNS = {COL_SCORE, COL_NAME}
+
+# Hidden by default in the narrow overlay. The point of a pick view is the
+# score, the card and whether it comes back; everything else is on demand.
+DEFAULT_HIDDEN = {COL_MANA, COL_ALSA, COL_IWD, COL_CAST}
+
+
 class PackView(QTreeView):
-    """Sorted, resizable booster table."""
+    """Sorted booster table with hover preview and toggleable columns."""
+
+    card_hovered = pyqtSignal(object)
+    card_left = pyqtSignal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -235,6 +247,59 @@ class PackView(QTreeView):
         for index, (_, width) in enumerate(COLUMNS):
             self.setColumnWidth(index, width)
         header.setSectionResizeMode(COL_NAME, QHeaderView.ResizeMode.Stretch)
+
+        # Columns are added AND removed from the same checkable menu, so a
+        # column you turned on can always be turned back off.
+        header.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        header.customContextMenuRequested.connect(self._show_column_menu)
+        for column in DEFAULT_HIDDEN:
+            self.setColumnHidden(column, True)
+
+        # Hover preview rather than click-to-freeze.
+        self.setMouseTracking(True)
+        self.viewport().setMouseTracking(True)
+        self.entered.connect(self._on_entered)
+
+    # --- columns --------------------------------------------------------
+
+    def _show_column_menu(self, position):
+        menu = QMenu(self)
+        menu.addAction("Colonnes affichées").setEnabled(False)
+        menu.addSeparator()
+        for index, (title, _) in enumerate(COLUMNS):
+            action = menu.addAction(title)
+            action.setCheckable(True)
+            action.setChecked(not self.isColumnHidden(index))
+            if index in MANDATORY_COLUMNS:
+                action.setEnabled(False)
+            else:
+                action.toggled.connect(
+                    lambda visible, col=index: self.setColumnHidden(col, not visible)
+                )
+        menu.addSeparator()
+        menu.addAction("Tout afficher").triggered.connect(self._show_all_columns)
+        menu.addAction("Vue compacte").triggered.connect(self._compact_columns)
+        menu.exec(self.header().mapToGlobal(position))
+
+    def _show_all_columns(self):
+        for index in range(len(COLUMNS)):
+            self.setColumnHidden(index, False)
+
+    def _compact_columns(self):
+        for index in range(len(COLUMNS)):
+            self.setColumnHidden(index, index in DEFAULT_HIDDEN)
+
+    # --- hover ----------------------------------------------------------
+
+    def _on_entered(self, index):
+        source = self.model().mapToSource(index)
+        card = self.source_model.card_at(source.row())
+        if card is not None:
+            self.card_hovered.emit(card)
+
+    def leaveEvent(self, event):
+        self.card_left.emit()
+        super().leaveEvent(event)
 
     def update_pack(self, snapshot):
         self.source_model.set_pack(

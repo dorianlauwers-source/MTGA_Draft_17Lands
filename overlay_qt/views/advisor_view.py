@@ -19,6 +19,31 @@ MUTED_COLOR = "#95a5a6"
 
 DEFAULT_LIMIT = 3
 
+# One line of reasons at 400px fits roughly this much before it is cut off.
+MAX_REASON_CHARS = 46
+
+
+def _summarise(rec):
+    """
+    The two most telling reasons, on a single line.
+
+    The engine emits up to a dozen ("Splash/Speculative", "TRUE BOMB (High
+    IWD)", "Highly Replaceable 2-Drops"...). Showing them all is what makes
+    the panel unreadable during a pick, so keep the head of the list and let
+    the tooltip carry the rest.
+    """
+    parts = []
+    if rec.archetype_fit and rec.archetype_fit != "Neutral":
+        parts.append(rec.archetype_fit)
+    parts.extend(rec.reasoning[:2])
+
+    text = "  •  ".join(parts)
+    if len(text) > MAX_REASON_CHARS and parts:
+        text = "  •  ".join(parts[:-1]) if len(parts) > 1 else parts[0]
+    if len(text) > MAX_REASON_CHARS:
+        text = text[: MAX_REASON_CHARS - 1].rstrip() + "…"
+    return text
+
 
 class _RecommendationRow(QWidget):
     def __init__(self, parent=None):
@@ -45,7 +70,10 @@ class _RecommendationRow(QWidget):
         self.reason = QLabel("")
         self.reason.setFont(QFont("Sans Serif", 9))
         self.reason.setStyleSheet(f"color: {MUTED_COLOR};")
-        self.reason.setWordWrap(True)
+        # One line only. In a narrow overlay, wrapping reasons pushed the
+        # panel past 200px and buried the booster table; the full list stays
+        # available in the tooltip.
+        self.reason.setWordWrap(False)
         text_column.addWidget(self.name)
         text_column.addWidget(self.reason)
         layout.addLayout(text_column, 1)
@@ -61,11 +89,12 @@ class _RecommendationRow(QWidget):
         star = "★ " if rec.is_elite else ""
         self.name.setText(f"{star}{rec.card_name}")
 
-        parts = list(rec.reasoning[:3])
-        if rec.archetype_fit and rec.archetype_fit != "Neutral":
-            parts.insert(0, rec.archetype_fit)
-        self.reason.setText("  •  ".join(parts) if parts else "")
-        self.setToolTip("\n".join(rec.reasoning) if rec.reasoning else "")
+        self.reason.setText(_summarise(rec))
+        tooltip = list(rec.reasoning)
+        if rec.tags:
+            tooltip.append("")
+            tooltip.append(", ".join(rec.tags))
+        self.setToolTip("\n".join(tooltip) if tooltip else "")
         self.show()
 
 

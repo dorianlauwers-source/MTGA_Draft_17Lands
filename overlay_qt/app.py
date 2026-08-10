@@ -18,7 +18,7 @@ import signal
 import sys
 
 from PyQt6.QtCore import Qt, QTimer
-from PyQt6.QtGui import QFont
+from PyQt6.QtGui import QCursor, QFont
 from PyQt6.QtWidgets import (QApplication, QHBoxLayout, QLabel, QMainWindow,
                              QMenu, QTabWidget, QVBoxLayout, QWidget)
 
@@ -30,6 +30,8 @@ from src.log_scanner import ArenaScanner
 
 from overlay_qt.bridge import DraftBridge
 from overlay_qt.views.advisor_view import AdvisorPanel
+from overlay_qt.views.card_preview import CardPreview
+from overlay_qt.views.info_strip import InfoStrip
 from overlay_qt.views.pack_view import PackView
 from overlay_qt.views.pool_view import PoolView
 
@@ -37,6 +39,9 @@ logger = logging.getLogger(__name__)
 
 ARENA_PROCESS = "MTGA.exe"
 ARENA_POLL_MS = 5000
+
+OVERLAY_WIDTH = 400
+OVERLAY_HEIGHT = 720
 
 
 def arena_is_running() -> bool:
@@ -70,7 +75,10 @@ class OverlayWindow(QMainWindow):
             Qt.WindowType.FramelessWindowHint | Qt.WindowType.WindowStaysOnTopHint
         )
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
-        self.resize(620, 700)
+        # Narrow enough to live beside Arena permanently. A wide window is
+        # what forces alt-tabbing, which defeats the point of an overlay.
+        self.resize(OVERLAY_WIDTH, OVERLAY_HEIGHT)
+        self.setMinimumWidth(320)
 
         central = QWidget()
         self.setCentralWidget(central)
@@ -93,9 +101,15 @@ class OverlayWindow(QMainWindow):
         )
         layout.addWidget(header)
 
+        # The advisor is the answer to "what do I take", so it sits at the top,
+        # not off to one side where it needs looking for.
         self.advisor = AdvisorPanel()
         self.advisor.setStyleSheet("background: rgba(255,255,255,0.04);")
         layout.addWidget(self.advisor)
+
+        # Lane, curve, pool and wheel on one line that never needs scrolling.
+        self.info_strip = InfoStrip()
+        layout.addWidget(self.info_strip)
 
         self.tabs = QTabWidget()
         self.pack_view = PackView()
@@ -103,6 +117,10 @@ class OverlayWindow(QMainWindow):
         self.tabs.addTab(self.pack_view, "Booster")
         self.tabs.addTab(self.pool_view, "Pool")
         layout.addWidget(self.tabs, 1)
+
+        self.preview = CardPreview()
+        self.pack_view.card_hovered.connect(self._on_card_hovered)
+        self.pack_view.card_left.connect(self.preview.hide_card)
 
         self.status_label = QLabel("Démarrage...")
         self.status_label.setStyleSheet(
@@ -129,6 +147,7 @@ class OverlayWindow(QMainWindow):
         self.bridge.start()
 
         self._drag_position = None
+        self._mode = None
 
         self.arena_timer = QTimer(self)
         if daemon_mode:
@@ -145,9 +164,11 @@ class OverlayWindow(QMainWindow):
                 f"{snapshot.event_set} {snapshot.event_type}".strip()
             )
         self.advisor.update_recommendations(snapshot.recommendations)
+        self.info_strip.update_from(snapshot)
         self.pack_view.update_pack(snapshot)
         self.pool_view.update_pool(snapshot)
         self.tabs.setTabText(1, f"Pool ({len(snapshot.taken_cards or [])})")
+        self._apply_mode(snapshot)
 
         taken = len(snapshot.taken_cards or [])
         colours = snapshot.active_filter
@@ -157,6 +178,24 @@ class OverlayWindow(QMainWindow):
         )
         if self.daemon_mode and snapshot.is_drafting and not self.isVisible():
             self.show()
+
+    def _on_card_hovered(self, card):
+        self.preview.show_card(card, QCursor.pos())
+
+    def _apply_mode(self, snapshot):
+        """
+        While a booster is on screen the pick is the only question, so the
+        advisor leads and the Booster tab is selected. Once the draft is over
+        there is no booster left and the pool becomes the useful view.
+        """
+        drafting = bool(snapshot.pack_cards)
+        self.advisor.setVisible(drafting)
+        if drafting and self._mode != "pick":
+            self._mode = "pick"
+            self.tabs.setCurrentIndex(0)
+        elif not drafting and self._mode != "build":
+            self._mode = "build"
+            self.tabs.setCurrentIndex(1)
 
     # --- daemon ---------------------------------------------------------
 
@@ -190,6 +229,7 @@ class OverlayWindow(QMainWindow):
         menu.exec(event.globalPos())
 
     def closeEvent(self, event):
+        self.preview.hide_card()
         self.bridge.stop()
         event.accept()
 
