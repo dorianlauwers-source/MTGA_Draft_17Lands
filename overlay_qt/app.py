@@ -20,7 +20,8 @@ import sys
 from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtGui import QCursor, QFont
 from PyQt6.QtWidgets import (QApplication, QHBoxLayout, QLabel, QMainWindow,
-                             QMenu, QTabWidget, QVBoxLayout, QWidget)
+                             QMenu, QPushButton, QSizeGrip, QTabWidget,
+                             QVBoxLayout, QWidget)
 
 from src import constants
 from src.configuration import read_configuration
@@ -65,6 +66,42 @@ def arena_is_running() -> bool:
     return False
 
 
+class DragHandle(QWidget):
+    """
+    Title bar of a frameless window.
+
+    QWidget.move() does nothing for a top-level window under Wayland: the
+    compositor owns placement, so an app cannot reposition itself. The only
+    way to drag is to ask the compositor to take over via startSystemMove(),
+    which also works on X11. Without it the overlay is pinned wherever the
+    compositor first put it.
+    """
+
+    def mousePressEvent(self, event):
+        if event.button() != Qt.MouseButton.LeftButton:
+            return super().mousePressEvent(event)
+        handle = self.window().windowHandle()
+        if handle is not None and handle.startSystemMove():
+            event.accept()
+            return
+        # X11 fallback for the rare case the compositor refuses.
+        self._press_position = event.globalPosition().toPoint()
+        event.accept()
+
+    def mouseMoveEvent(self, event):
+        origin = getattr(self, "_press_position", None)
+        if origin is None or event.buttons() != Qt.MouseButton.LeftButton:
+            return super().mouseMoveEvent(event)
+        window = self.window()
+        current = event.globalPosition().toPoint()
+        window.move(window.pos() + current - origin)
+        self._press_position = current
+
+    def mouseReleaseEvent(self, event):
+        self._press_position = None
+        super().mouseReleaseEvent(event)
+
+
 class OverlayWindow(QMainWindow):
     def __init__(self, scanner, configuration, daemon_mode=False):
         super().__init__()
@@ -86,18 +123,36 @@ class OverlayWindow(QMainWindow):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(2)
 
-        header = QWidget()
+        header = DragHandle()
+        header.setCursor(Qt.CursorShape.SizeAllCursor)
         header_layout = QHBoxLayout(header)
-        header_layout.setContentsMargins(8, 4, 8, 4)
+        header_layout.setContentsMargins(8, 3, 4, 3)
+        header_layout.setSpacing(4)
         self.title_label = QLabel("En attente d'un draft...")
         self.title_label.setFont(QFont("Sans Serif", 11, QFont.Weight.Bold))
         self.event_label = QLabel("")
         self.event_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         header_layout.addWidget(self.title_label, 1)
         header_layout.addWidget(self.event_label, 1)
+
+        self.reload_button = self._header_button(
+            "⟳",
+            "Relire le fichier log depuis le début\n"
+            "Reconstruit un draft déjà en cours",
+            self.reload_log,
+        )
+        header_layout.addWidget(self.reload_button)
+        header_layout.addWidget(
+            self._header_button("✕", "Fermer l'overlay", self.close)
+        )
+
+        # Style the handle and its labels together: the central stylesheet
+        # below would otherwise paint each label with the body background and
+        # leave visible boxes in the title bar.
         header.setStyleSheet(
-            "background: #2c3e50; color: #ecf0f1; border-top-left-radius: 5px;"
-            " border-top-right-radius: 5px;"
+            "DragHandle { background: #2c3e50; border-top-left-radius: 5px;"
+            " border-top-right-radius: 5px; }"
+            "DragHandle QLabel { background: transparent; color: #ecf0f1; }"
         )
         layout.addWidget(header)
 
@@ -122,11 +177,20 @@ class OverlayWindow(QMainWindow):
         self.pack_view.card_hovered.connect(self._on_card_hovered)
         self.pack_view.card_left.connect(self.preview.hide_card)
 
+        footer = QWidget()
+        footer_layout = QHBoxLayout(footer)
+        footer_layout.setContentsMargins(0, 0, 0, 0)
+        footer_layout.setSpacing(0)
         self.status_label = QLabel("Démarrage...")
         self.status_label.setStyleSheet(
-            "background: rgba(18,18,18,235); color: #95a5a6; padding: 4px; font-size: 12px;"
+            "background: transparent; color: #95a5a6; padding: 4px; font-size: 12px;"
         )
-        layout.addWidget(self.status_label)
+        footer_layout.addWidget(self.status_label, 1)
+        # A frameless window has no border to grab; without this the overlay
+        # cannot be resized at all under Wayland.
+        footer_layout.addWidget(QSizeGrip(footer), 0, Qt.AlignmentFlag.AlignBottom)
+        footer.setStyleSheet("background: rgba(18,18,18,235);")
+        layout.addWidget(footer)
 
         central.setStyleSheet(
             "QWidget { background: rgba(18,18,18,242); color: #ecf0f1; }"
@@ -178,6 +242,32 @@ class OverlayWindow(QMainWindow):
         )
         if self.daemon_mode and snapshot.is_drafting and not self.isVisible():
             self.show()
+
+    @staticmethod
+    def _header_button(glyph, tooltip, slot):
+        button = QPushButton(glyph)
+        button.setToolTip(tooltip)
+        button.setFixedSize(24, 22)
+        button.setCursor(Qt.CursorShape.PointingHandCursor)
+        button.setStyleSheet(
+            "QPushButton { background: transparent; color: #ecf0f1; border: none;"
+            " font-size: 14px; }"
+            "QPushButton:hover { background: rgba(255,255,255,0.15);"
+            " border-radius: 3px; }"
+        )
+        button.clicked.connect(slot)
+        return button
+
+    def reload_log(self):
+        """
+        Re-read the whole Player.log from the start.
+
+        clear_draft(True) resets every read offset to zero, so a draft already
+        in progress when the overlay starts is rebuilt pick by pick. This is
+        the only way to join a draft midway without restarting it.
+        """
+        self.status_label.setText("Relecture du log en cours...")
+        self.bridge.full_rescan()
 
     def _on_card_hovered(self, card):
         self.preview.show_card(card, QCursor.pos())
