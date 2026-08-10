@@ -50,6 +50,27 @@ class _SnapshotWorker(QRunnable):
             self.signals.failed.emit(str(error))
 
 
+class _RescanWorker(QRunnable):
+    """Resets the read offsets and asks for a full scan, off the GUI thread."""
+
+    def __init__(self, scanner, orchestrator):
+        super().__init__()
+        self.scanner = scanner
+        self.orchestrator = orchestrator
+        self.signals = _WorkerSignals()
+
+    def run(self):
+        try:
+            with self.scanner.lock:
+                self.scanner.clear_draft(True)
+            self.orchestrator.trigger_full_scan()
+        except Exception as error:
+            logger.exception("Full rescan failed")
+            self.signals.failed.emit(str(error))
+        finally:
+            self.signals.finished.emit(None)
+
+
 class DraftBridge(QObject):
     """
     Owns the upstream orchestrator and turns it into Qt signals.
@@ -72,6 +93,10 @@ class DraftBridge(QObject):
         self._pool.setMaxThreadCount(1)
         self._busy = False
         self._refresh_pending = False
+        # Control actions must never queue behind a snapshot on the single
+        # snapshot thread, otherwise a reload waits for the current refresh.
+        self._control_pool = QThreadPool(self)
+        self._control_pool.setMaxThreadCount(1)
 
         self.orchestrator = DraftOrchestrator(
             scanner, configuration, refresh_callback=self._on_orchestrator_refresh
@@ -151,6 +176,20 @@ class DraftBridge(QObject):
         self.orchestrator.set_file_and_scan(path)
 
     def full_rescan(self):
-        with self.scanner.lock:
-            self.scanner.clear_draft(True)
-        self.orchestrator.trigger_full_scan()
+        """
+        Re-read the log from byte zero, rebuilding a draft already in progress.
+
+        The work runs off the GUI thread on purpose. clear_draft() needs the
+        scanner lock, which the orchestrator holds for as long as it takes to
+        load the set dataset; measured at 27 seconds on a cold MSH cache. Taking
+        that lock from the GUI thread froze the whole overlay for the duration.
+        """
+        self.status_changed.emit("Relecture du log...")
+        worker = _RescanWorker(self.scanner, self.orchestrator)
+        worker.signals.finished.connect(lambda _: self._on_rescan_done())
+        self._control_pool.start(worker)
+
+    def _on_rescan_done(self):
+        # If the rescan turned up nothing new the orchestrator never queues a
+        # REFRESH, so ask for one explicitly rather than leave a stale message.
+        self.request_refresh()

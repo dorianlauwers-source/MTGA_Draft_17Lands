@@ -240,6 +240,7 @@ class OverlayWindow(QMainWindow):
         self.status_label.setText(
             f"{taken} carte{plural} prise{plural}  |  archétype : {colours}"
         )
+        self.reload_button.setEnabled(True)
         if self.daemon_mode and snapshot.is_drafting and not self.isVisible():
             self.show()
 
@@ -265,8 +266,12 @@ class OverlayWindow(QMainWindow):
         clear_draft(True) resets every read offset to zero, so a draft already
         in progress when the overlay starts is rebuilt pick by pick. This is
         the only way to join a draft midway without restarting it.
+
+        Measured at around 30 seconds, most of it spent loading the set
+        dataset, so the button says so: an unexplained wait reads as a freeze.
         """
-        self.status_label.setText("Relecture du log en cours...")
+        self.reload_button.setEnabled(False)
+        self.status_label.setText("Relecture du log, jusqu'à 30 s...")
         self.bridge.full_rescan()
 
     def _on_card_hovered(self, card):
@@ -336,7 +341,15 @@ def build_scanner(configuration, log_path=None):
     logger.info("Player.log : %s", path)
 
     limited_sets = LimitedSets().retrieve_limited_sets()
-    scanner = ArenaScanner(path, limited_sets.data)
+    # Pass the SetDictionary itself, not its .data mapping: ArenaScanner reads
+    # set_list.special_events, so a bare dict makes every event lookup raise
+    # and no draft is ever recognised.
+    scanner = ArenaScanner(
+        filename=path,
+        set_list=limited_sets,
+        retrieve_unknown=True,
+        db_path=configuration.settings.database_location,
+    )
     configuration.settings.arena_log_location = path
     return scanner
 
