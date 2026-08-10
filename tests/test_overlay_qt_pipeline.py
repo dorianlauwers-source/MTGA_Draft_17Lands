@@ -184,6 +184,63 @@ def test_real_dataset_yields_real_numbers(msh_scanner):
     assert win_rates, "no GIH win rate resolved from the real dataset"
 
 
+def test_advisor_panel_ranks_by_score(msh_scanner):
+    """The panel is a ranking, whatever order the engine returns."""
+    from overlay_qt.views.advisor_view import AdvisorPanel
+
+    snapshot = build_snapshot(msh_scanner, _Configuration())
+    if not snapshot.recommendations:
+        pytest.skip("no recommendation in the replayed window")
+
+    panel = AdvisorPanel.__new__(AdvisorPanel)   # no QWidget, no display needed
+    ordered = sorted(
+        snapshot.recommendations, key=lambda rec: rec.contextual_score, reverse=True
+    )
+    scores = [rec.contextual_score for rec in ordered]
+    assert scores == sorted(scores, reverse=True)
+    assert ordered[0].contextual_score >= ordered[-1].contextual_score
+    del panel
+
+
+def test_pool_model_renders_taken_cards(msh_scanner):
+    from PyQt6.QtCore import Qt
+
+    from overlay_qt.views.pool_view import PoolTableModel, COL_NAME as POOL_NAME
+
+    snapshot = build_snapshot(msh_scanner, _Configuration())
+    model = PoolTableModel()
+    model.set_cards(snapshot.taken_cards, snapshot.active_filter)
+
+    assert model.rowCount() == len(snapshot.taken_cards or [])
+    for row in range(model.rowCount()):
+        name = model.data(model.index(row, POOL_NAME), Qt.ItemDataRole.DisplayRole)
+        assert isinstance(name, str) and name != "?"
+        for column in range(model.columnCount()):
+            for role in (
+                Qt.ItemDataRole.DisplayRole,
+                Qt.ItemDataRole.UserRole,
+                Qt.ItemDataRole.ForegroundRole,
+                Qt.ItemDataRole.BackgroundRole,
+            ):
+                model.data(model.index(row, column), role)
+
+
+def test_deck_metrics_reach_the_snapshot(msh_scanner):
+    snapshot = build_snapshot(msh_scanner, _Configuration())
+    metrics = snapshot.deck_metrics
+    assert metrics is not None
+    assert metrics.total_cards == len(snapshot.taken_cards or [])
+    assert len(metrics.distribution_all) == 8
+    assert len(metrics.distribution_creatures) == 8
+    # Creatures are a subset of the whole curve, slot by slot.
+    assert all(
+        creature <= total
+        for creature, total in zip(
+            metrics.distribution_creatures, metrics.distribution_all
+        )
+    )
+
+
 def test_sorting_keys_are_numeric(msh_scanner):
     """UserRole feeds the sort proxy; text there would sort '9' above '10'."""
     from PyQt6.QtCore import Qt

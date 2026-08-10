@@ -20,7 +20,7 @@ import sys
 from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtGui import QFont
 from PyQt6.QtWidgets import (QApplication, QHBoxLayout, QLabel, QMainWindow,
-                             QMenu, QVBoxLayout, QWidget)
+                             QMenu, QTabWidget, QVBoxLayout, QWidget)
 
 from src import constants
 from src.configuration import read_configuration
@@ -29,7 +29,9 @@ from src.limited_sets import LimitedSets
 from src.log_scanner import ArenaScanner
 
 from overlay_qt.bridge import DraftBridge
+from overlay_qt.views.advisor_view import AdvisorPanel
 from overlay_qt.views.pack_view import PackView
+from overlay_qt.views.pool_view import PoolView
 
 logger = logging.getLogger(__name__)
 
@@ -91,8 +93,16 @@ class OverlayWindow(QMainWindow):
         )
         layout.addWidget(header)
 
+        self.advisor = AdvisorPanel()
+        self.advisor.setStyleSheet("background: rgba(255,255,255,0.04);")
+        layout.addWidget(self.advisor)
+
+        self.tabs = QTabWidget()
         self.pack_view = PackView()
-        layout.addWidget(self.pack_view, 1)
+        self.pool_view = PoolView()
+        self.tabs.addTab(self.pack_view, "Booster")
+        self.tabs.addTab(self.pool_view, "Pool")
+        layout.addWidget(self.tabs, 1)
 
         self.status_label = QLabel("Démarrage...")
         self.status_label.setStyleSheet(
@@ -106,6 +116,10 @@ class OverlayWindow(QMainWindow):
             "QTreeView::item { padding: 3px; }"
             "QHeaderView::section { background: #34495e; color: #ecf0f1;"
             " padding: 4px; border: none; font-weight: bold; }"
+            "QTabWidget::pane { border: none; }"
+            "QTabBar::tab { background: #2c3e50; color: #bdc3c7; padding: 5px 14px; }"
+            "QTabBar::tab:selected { background: #34495e; color: #ecf0f1;"
+            " font-weight: bold; }"
         )
 
         self.bridge = DraftBridge(scanner, configuration, parent=self)
@@ -130,12 +144,16 @@ class OverlayWindow(QMainWindow):
             self.event_label.setText(
                 f"{snapshot.event_set} {snapshot.event_type}".strip()
             )
+        self.advisor.update_recommendations(snapshot.recommendations)
         self.pack_view.update_pack(snapshot)
+        self.pool_view.update_pool(snapshot)
+        self.tabs.setTabText(1, f"Pool ({len(snapshot.taken_cards or [])})")
 
         taken = len(snapshot.taken_cards or [])
         colours = snapshot.active_filter
+        plural = "s" if taken > 1 else ""
         self.status_label.setText(
-            f"{taken} carte(s) prise(s)  |  couleurs : {colours}"
+            f"{taken} carte{plural} prise{plural}  |  archétype : {colours}"
         )
         if self.daemon_mode and snapshot.is_drafting and not self.isVisible():
             self.show()
