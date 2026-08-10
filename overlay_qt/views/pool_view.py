@@ -7,7 +7,8 @@ dashboard's mana curve / colour widgets, because during a draft those questions
 are asked together: what do I have, and what is it missing.
 """
 
-from PyQt6.QtCore import QAbstractTableModel, QModelIndex, Qt, QSortFilterProxyModel
+from PyQt6.QtCore import (QAbstractTableModel, QModelIndex, Qt,
+                          QSortFilterProxyModel, pyqtSignal)
 from PyQt6.QtGui import QColor, QPainter
 from PyQt6.QtWidgets import (QHBoxLayout, QHeaderView, QLabel, QTreeView,
                              QVBoxLayout, QWidget)
@@ -152,6 +153,9 @@ class ManaCurveWidget(QWidget):
 
 
 class PoolView(QWidget):
+    card_hovered = pyqtSignal(object)
+    card_left = pyqtSignal()
+
     def __init__(self, parent=None):
         super().__init__(parent)
         layout = QVBoxLayout(self)
@@ -189,7 +193,21 @@ class PoolView(QWidget):
         for index, (_, width) in enumerate(COLUMNS):
             self.table.setColumnWidth(index, width)
         self.table.header().setSectionResizeMode(COL_NAME, QHeaderView.ResizeMode.Stretch)
+        self.table.setMouseTracking(True)
+        self.table.viewport().setMouseTracking(True)
+        self.table.entered.connect(self._on_entered)
+        self.table.leaveEvent = self._on_leave
         layout.addWidget(self.table, 1)
+
+    def _on_entered(self, index):
+        source = self.table.model().mapToSource(index)
+        card = self.source_model._cards[source.row()] if 0 <= source.row() < len(
+            self.source_model._cards) else None
+        if card is not None:
+            self.card_hovered.emit(card)
+
+    def _on_leave(self, event):
+        self.card_left.emit()
 
     def update_pool(self, snapshot):
         cards = snapshot.taken_cards or []

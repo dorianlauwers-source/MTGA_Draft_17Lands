@@ -174,9 +174,17 @@ class OverlayWindow(QMainWindow):
         self.tabs.addTab(self.pool_view, "Pool")
         layout.addWidget(self.tabs, 1)
 
-        self.preview = CardPreview()
+        # Child of the central widget, not a top-level window: Wayland refuses
+        # to position a top-level surface, so a floating popup never lands
+        # where it is asked to.
+        self.preview = CardPreview(central)
+        self._cards_by_name = {}
         self.pack_view.card_hovered.connect(self._on_card_hovered)
         self.pack_view.card_left.connect(self.preview.hide_card)
+        self.pool_view.card_hovered.connect(self._on_card_hovered)
+        self.pool_view.card_left.connect(self.preview.hide_card)
+        self.advisor.card_hovered.connect(self._on_name_hovered)
+        self.advisor.card_left.connect(self.preview.hide_card)
 
         footer = QWidget()
         footer_layout = QHBoxLayout(footer)
@@ -228,6 +236,10 @@ class OverlayWindow(QMainWindow):
             self.event_label.setText(
                 f"{snapshot.event_set} {snapshot.event_type}".strip()
             )
+        self._cards_by_name = {
+            card.get(constants.DATA_FIELD_NAME): card
+            for card in list(snapshot.pack_cards or []) + list(snapshot.taken_cards or [])
+        }
         self.advisor.update_recommendations(snapshot.recommendations)
         self.info_strip.update_from(snapshot)
         self.pack_view.update_pack(snapshot)
@@ -277,6 +289,12 @@ class OverlayWindow(QMainWindow):
 
     def _on_card_hovered(self, card):
         self.preview.show_card(card, QCursor.pos())
+
+    def _on_name_hovered(self, card_name):
+        """The advisor only carries a name, so map it back to the card."""
+        card = self._cards_by_name.get(card_name)
+        if card is not None:
+            self.preview.show_card(card, QCursor.pos())
 
     def _apply_mode(self, snapshot):
         """

@@ -9,7 +9,7 @@ rows are created once and only their text changes, which avoids the flicker and
 the churn during a fast draft.
 """
 
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtGui import QFont
 from PyQt6.QtWidgets import QFrame, QHBoxLayout, QLabel, QVBoxLayout, QWidget
 
@@ -46,8 +46,13 @@ def _summarise(rec):
 
 
 class _RecommendationRow(QWidget):
+    hovered = pyqtSignal(str)
+    left = pyqtSignal()
+
     def __init__(self, parent=None):
         super().__init__(parent)
+        self.card_name = ""
+        self.setMouseTracking(True)
         layout = QHBoxLayout(self)
         layout.setContentsMargins(6, 3, 6, 3)
         layout.setSpacing(8)
@@ -78,10 +83,21 @@ class _RecommendationRow(QWidget):
         text_column.addWidget(self.reason)
         layout.addLayout(text_column, 1)
 
+    def enterEvent(self, event):
+        if self.card_name:
+            self.hovered.emit(self.card_name)
+        super().enterEvent(event)
+
+    def leaveEvent(self, event):
+        self.left.emit()
+        super().leaveEvent(event)
+
     def set_recommendation(self, rec):
         if rec is None:
+            self.card_name = ""
             self.hide()
             return
+        self.card_name = rec.card_name
         colour = ELITE_COLOR if rec.is_elite else NORMAL_COLOR
         self.accent.setStyleSheet(f"background: {colour};")
         self.score.setText(f"{rec.contextual_score:.0f}")
@@ -101,6 +117,9 @@ class _RecommendationRow(QWidget):
 class AdvisorPanel(QWidget):
     """Compact ranking of the best picks in the current booster."""
 
+    card_hovered = pyqtSignal(str)
+    card_left = pyqtSignal()
+
     def __init__(self, limit=DEFAULT_LIMIT, parent=None):
         super().__init__(parent)
         layout = QVBoxLayout(self)
@@ -115,6 +134,8 @@ class AdvisorPanel(QWidget):
         self.rows = [_RecommendationRow() for _ in range(limit)]
         for row in self.rows:
             row.hide()
+            row.hovered.connect(self.card_hovered)
+            row.left.connect(self.card_left)
             layout.addWidget(row)
 
     def update_recommendations(self, recommendations):
