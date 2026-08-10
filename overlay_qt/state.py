@@ -95,10 +95,19 @@ class DraftSnapshot:
         return self.colors or constants.FILTER_OPTION_ALL_DECKS
 
     @property
+    def is_sealed(self) -> bool:
+        """Sealed and Traditional Sealed: a pool arrives at once, no boosters."""
+        return "sealed" in (self.event_type or "").lower()
+
+    @property
     def status_text(self) -> str:
         if self.is_drafting:
             return f"Pack {self.pack} Pick {self.pick}"
-        return "Waiting for draft..."
+        if self.is_sealed and self.taken_cards:
+            return f"Sealed · {len(self.taken_cards)} cartes"
+        if self.taken_cards:
+            return "Construction du deck"
+        return "En attente d'un draft..."
 
 
 def bind_dataset(scanner, configuration=None) -> bool:

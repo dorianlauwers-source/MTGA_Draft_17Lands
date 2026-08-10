@@ -415,16 +415,27 @@ class OverlayWindow(QMainWindow):
     def _apply_mode(self, snapshot):
         """
         While a booster is on screen the pick is the only question, so the
-        advisor leads and the Booster tab is selected. Once the draft is over
-        there is no booster left and the pool becomes the useful view.
+        advisor leads and the Booster tab is selected. Once there is no booster
+        the deck becomes the useful view.
+
+        Sealed never has a booster: the whole pool arrives at once, so the
+        booster tab and the pick advisor are hidden outright rather than left
+        there permanently empty.
         """
         drafting = bool(snapshot.pack_cards)
-        self.advisor.setVisible(drafting)
-        if drafting and self._mode != "pick":
-            self._mode = "pick"
-            self.tabs.setCurrentIndex(0)
-        elif not drafting and self._mode != "build":
-            self._mode = "build"
+        sealed = snapshot.is_sealed
+
+        self.advisor.setVisible(drafting and not sealed)
+        self.tabs.setTabVisible(0, not sealed)
+        self.info_strip.setVisible(not sealed or bool(snapshot.taken_cards))
+
+        mode = "pick" if drafting and not sealed else "build"
+        if mode == self._mode:
+            return
+        self._mode = mode
+        if mode == "pick":
+            self.tabs.setCurrentWidget(self.pack_view)
+        else:
             self.tabs.setCurrentWidget(self.deck_view)
             self._request_decks()
 
