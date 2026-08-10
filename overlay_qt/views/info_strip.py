@@ -15,6 +15,9 @@ from PyQt6.QtWidgets import QHBoxLayout, QLabel, QWidget
 # A card that wheels comes back after the other seven players have picked.
 WHEEL_THRESHOLD = 50.0
 
+# Under this width the strip drops its word labels rather than truncate values.
+COMPACT_WIDTH = 380
+
 LANE_COLORS = {
     "W": "#f9ebce",
     "U": "#a3cbe8",
@@ -49,8 +52,26 @@ class InfoStrip(QWidget):
 
         self.setStyleSheet("background: rgba(255,255,255,0.05);")
         self.setFixedHeight(22)
+        self._compact = False
+        self._snapshot = None
+
+    def resizeEvent(self, event):
+        """
+        Below roughly 380px the word labels no longer fit and the sections get
+        cut mid-value, which is worse than dropping the words entirely.
+        """
+        compact = self.width() < COMPACT_WIDTH
+        if compact != self._compact:
+            self._compact = compact
+            if self._snapshot is not None:
+                self.update_from(self._snapshot)
+        super().resizeEvent(event)
+
+    def _word(self, label):
+        return "" if self._compact else f"<span style='color:#95a5a6;'>{label}</span> "
 
     def update_from(self, snapshot):
+        self._snapshot = snapshot
         self.lane.setText(self._lane_text(snapshot.signals))
         self.curve.setText(self._curve_text(snapshot.deck_metrics))
         self.pool.setText(self._pool_text(snapshot.deck_metrics))
@@ -66,32 +87,33 @@ class InfoStrip(QWidget):
 
     # --- sections -------------------------------------------------------
 
-    @staticmethod
-    def _lane_text(signals):
+    def _lane_text(self, signals):
         if not signals:
             return "<span style='color:#7f8c8d;'>lane —</span>"
         ranked = sorted(signals.items(), key=lambda item: item[1], reverse=True)[:2]
         parts = []
         for colour, value in ranked:
             tint = LANE_COLORS.get(colour, "#ecf0f1")
-            parts.append(f"<b style='color:{tint};'>{colour}</b> {value:+.1f}")
+            shown = f"{value:+.0f}" if self._compact else f"{value:+.1f}"
+            parts.append(f"<b style='color:{tint};'>{colour}</b> {shown}")
         return " ".join(parts)
 
-    @staticmethod
-    def _curve_text(metrics):
+    def _curve_text(self, metrics):
         if metrics is None or not any(metrics.distribution_all):
             return "<span style='color:#7f8c8d;'>courbe —</span>"
         # Slots 1..6+, slot 0 holds the zero-cost cards and is rarely useful.
         counts = metrics.distribution_all
-        cells = [str(counts[i]) for i in range(1, 7)]
-        return "<span style='color:#95a5a6;'>courbe</span> " + "-".join(cells)
+        upper = 5 if self._compact else 7
+        cells = [str(counts[i]) for i in range(1, upper)]
+        return self._word("courbe") + "-".join(cells)
 
-    @staticmethod
-    def _pool_text(metrics):
+    def _pool_text(self, metrics):
         if metrics is None:
             return ""
+        if self._compact:
+            return f"{metrics.total_cards}/{metrics.creature_count}cr"
         return (
-            f"<span style='color:#95a5a6;'>pool</span> {metrics.total_cards}"
+            self._word("pool") + f"{metrics.total_cards}"
             f" · {metrics.creature_count}cr"
             f" · {metrics.cmc_average:.1f}"
         )

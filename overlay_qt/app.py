@@ -29,6 +29,7 @@ from src.file_extractor import search_arena_log_locations
 from src.limited_sets import LimitedSets
 from src.log_scanner import ArenaScanner
 
+from overlay_qt import prefs
 from overlay_qt.bridge import DraftBridge
 from overlay_qt.state import rebuild_draft
 from overlay_qt.views.advisor_view import AdvisorPanel
@@ -43,8 +44,8 @@ logger = logging.getLogger(__name__)
 ARENA_PROCESS = "MTGA.exe"
 ARENA_POLL_MS = 5000
 
-OVERLAY_WIDTH = 400
-OVERLAY_HEIGHT = 720
+# Defaults live in overlay_qt.prefs; these are only the floor.
+MIN_OVERLAY_WIDTH = 280
 
 
 def arena_is_running() -> bool:
@@ -103,6 +104,15 @@ class DragHandle(QWidget):
         self._press_position = None
         super().mouseReleaseEvent(event)
 
+    def wheelEvent(self, event):
+        """Scrolling the title bar adjusts transparency, no dialog needed."""
+        window = self.window()
+        if hasattr(window, "adjust_opacity"):
+            window.adjust_opacity(1 if event.angleDelta().y() > 0 else -1)
+            event.accept()
+        else:
+            super().wheelEvent(event)
+
 
 class OverlayWindow(QMainWindow):
     def __init__(self, scanner, configuration, daemon_mode=False):
@@ -114,10 +124,11 @@ class OverlayWindow(QMainWindow):
             Qt.WindowType.FramelessWindowHint | Qt.WindowType.WindowStaysOnTopHint
         )
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
-        # Narrow enough to live beside Arena permanently. A wide window is
-        # what forces alt-tabbing, which defeats the point of an overlay.
-        self.resize(OVERLAY_WIDTH, OVERLAY_HEIGHT)
-        self.setMinimumWidth(320)
+        # Narrow enough to live beside Arena permanently, and translucent so
+        # the cards it covers stay readable. Both are remembered between runs.
+        self.prefs = prefs.load()
+        self.resize(self.prefs["width"], self.prefs["height"])
+        self.setMinimumWidth(MIN_OVERLAY_WIDTH)
 
         central = QWidget()
         self.setCentralWidget(central)
@@ -136,6 +147,14 @@ class OverlayWindow(QMainWindow):
         self.event_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         header_layout.addWidget(self.title_label, 1)
         header_layout.addWidget(self.event_label, 1)
+
+        self.opacity_button = self._header_button(
+            "◐",
+            "Transparence de l'overlay\n"
+            "Molette sur la barre de titre pour ajuster finement",
+            self._cycle_opacity,
+        )
+        header_layout.addWidget(self.opacity_button)
 
         self.reload_button = self._header_button(
             "⟳",
@@ -207,17 +226,10 @@ class OverlayWindow(QMainWindow):
         footer.setStyleSheet("background: rgba(18,18,18,235);")
         layout.addWidget(footer)
 
-        central.setStyleSheet(
-            "QWidget { background: rgba(18,18,18,242); color: #ecf0f1; }"
-            "QTreeView { background: transparent; border: none; font-size: 13px; }"
-            "QTreeView::item { padding: 3px; }"
-            "QHeaderView::section { background: #34495e; color: #ecf0f1;"
-            " padding: 4px; border: none; font-weight: bold; }"
-            "QTabWidget::pane { border: none; }"
-            "QTabBar::tab { background: #2c3e50; color: #bdc3c7; padding: 5px 14px; }"
-            "QTabBar::tab:selected { background: #34495e; color: #ecf0f1;"
-            " font-weight: bold; }"
-        )
+        self._central = central
+        self._header = header
+        self._footer = footer
+        self._apply_opacity(self.prefs["opacity"])
 
         self.bridge = DraftBridge(scanner, configuration, parent=self)
         self.bridge.snapshot_ready.connect(self.on_snapshot)
@@ -298,6 +310,57 @@ class OverlayWindow(QMainWindow):
         self.status_label.setText("Relecture du log, jusqu'à 30 s...")
         self.bridge.full_rescan()
 
+    # --- appearance ------------------------------------------------------
+
+    def _apply_opacity(self, value):
+        """
+        Transparency through the background alpha, not setWindowOpacity.
+
+        The Wayland plugin does not implement window opacity: the value is
+        stored and nothing changes on screen. Painting the backgrounds with an
+        alpha channel works everywhere, and it is the better result anyway,
+        because the text stays fully opaque and readable while the cards behind
+        show through.
+        """
+        alpha = int(255 * value)
+        body = "rgba(18,18,18,%d)" % alpha
+        chrome = "rgba(44,62,80,%d)" % alpha
+        accent = "rgba(52,73,94,%d)" % alpha
+
+        self._central.setStyleSheet(
+            "QWidget { background: %s; color: #ecf0f1; }"
+            "QTreeView { background: transparent; border: none; font-size: 13px; }"
+            "QTreeView::item { padding: 3px; }"
+            "QHeaderView::section { background: %s; color: #ecf0f1; padding: 4px;"
+            " border: none; font-weight: bold; }"
+            "QTabWidget::pane { border: none; }"
+            "QTabBar::tab { background: %s; color: #bdc3c7; padding: 5px 14px; }"
+            "QTabBar::tab:selected { background: %s; color: #ecf0f1;"
+            " font-weight: bold; }" % (body, accent, chrome, accent)
+        )
+        self._header.setStyleSheet(
+            "DragHandle { background: %s; border-top-left-radius: 5px;"
+            " border-top-right-radius: 5px; }"
+            "DragHandle QLabel { background: transparent; color: #ecf0f1; }" % chrome
+        )
+        self._footer.setStyleSheet("background: %s;" % body)
+
+    def set_opacity(self, value):
+        value = max(prefs.MIN_OPACITY, min(prefs.MAX_OPACITY, round(value, 2)))
+        self.prefs["opacity"] = value
+        self._apply_opacity(value)
+        self.status_label.setText(f"Opacité : {value * 100:.0f}%")
+
+    def _cycle_opacity(self):
+        """Step down through opacity and wrap round, so one button is enough."""
+        value = self.prefs["opacity"] - 0.15
+        if value < prefs.MIN_OPACITY:
+            value = prefs.MAX_OPACITY
+        self.set_opacity(value)
+
+    def adjust_opacity(self, steps):
+        self.set_opacity(self.prefs["opacity"] + steps * prefs.OPACITY_STEP)
+
     def _on_tab_changed(self, index):
         """Build the decks the first time the Deck tab is looked at."""
         if self.tabs.widget(index) is self.deck_view:
@@ -374,6 +437,9 @@ class OverlayWindow(QMainWindow):
         menu.exec(event.globalPos())
 
     def closeEvent(self, event):
+        self.prefs["width"] = self.width()
+        self.prefs["height"] = self.height()
+        prefs.save(self.prefs)
         self.preview.hide_card()
         self.bridge.stop()
         event.accept()
