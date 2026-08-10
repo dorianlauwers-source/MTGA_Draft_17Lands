@@ -30,6 +30,7 @@ from src.limited_sets import LimitedSets
 from src.log_scanner import ArenaScanner
 
 from overlay_qt.bridge import DraftBridge
+from overlay_qt.state import rebuild_draft
 from overlay_qt.views.advisor_view import AdvisorPanel
 from overlay_qt.views.card_preview import CardPreview
 from overlay_qt.views.info_strip import InfoStrip
@@ -351,6 +352,11 @@ def build_scanner(configuration, log_path=None):
         db_path=configuration.settings.database_location,
     )
     configuration.settings.arena_log_location = path
+
+    # Same sequence as main.load_data: identify the event, attach its ratings
+    # dataset, then replay the picks. Skipping it leaves every win rate and
+    # advisor score at zero even though the cards themselves resolve.
+    rebuild_draft(scanner, configuration)
     return scanner
 
 

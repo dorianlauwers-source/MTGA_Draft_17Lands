@@ -19,7 +19,7 @@ from PyQt6.QtCore import QObject, QRunnable, QThreadPool, QTimer, pyqtSignal
 
 from src.ui.orchestrator import DraftOrchestrator
 
-from overlay_qt.state import build_snapshot, take_raw_snapshot
+from overlay_qt.state import build_snapshot, rebuild_draft, take_raw_snapshot
 
 logger = logging.getLogger(__name__)
 
@@ -53,16 +53,17 @@ class _SnapshotWorker(QRunnable):
 class _RescanWorker(QRunnable):
     """Resets the read offsets and asks for a full scan, off the GUI thread."""
 
-    def __init__(self, scanner, orchestrator):
+    def __init__(self, scanner, orchestrator, configuration=None):
         super().__init__()
         self.scanner = scanner
         self.orchestrator = orchestrator
+        self.configuration = configuration
         self.signals = _WorkerSignals()
 
     def run(self):
         try:
             with self.scanner.lock:
-                self.scanner.clear_draft(True)
+                rebuild_draft(self.scanner, self.configuration)
             self.orchestrator.trigger_full_scan()
         except Exception as error:
             logger.exception("Full rescan failed")
@@ -185,7 +186,7 @@ class DraftBridge(QObject):
         that lock from the GUI thread froze the whole overlay for the duration.
         """
         self.status_changed.emit("Relecture du log...")
-        worker = _RescanWorker(self.scanner, self.orchestrator)
+        worker = _RescanWorker(self.scanner, self.orchestrator, self.configuration)
         worker.signals.finished.connect(lambda _: self._on_rescan_done())
         self._control_pool.start(worker)
 

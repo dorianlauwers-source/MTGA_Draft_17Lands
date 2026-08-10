@@ -11,6 +11,8 @@ front ends.
 Nothing here mutates upstream state, so upstream can keep evolving underneath.
 """
 
+import logging
+import os
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
@@ -18,6 +20,34 @@ from src import constants
 from src.advisor.engine import DraftAdvisor
 from src.card_logic import filter_options, get_deck_metrics
 from src.signals import SignalCalculator
+
+logger = logging.getLogger(__name__)
+
+# A dataset with fewer rated cards than this is not worth showing: the table
+# fills with zeros. 17lands publishes a file per event type, and the ones for
+# formats nobody has played yet contain every card with no statistics at all.
+MINIMUM_RATED_CARDS = 50
+MAX_DATASETS_TRIED = 4
+
+
+def _rated_card_count(scanner) -> int:
+    """
+    How many cards in the loaded dataset actually carry a win rate.
+
+    Counting the entries of _dataset is meaningless: it holds three sections
+    (meta, color_ratings, card_ratings), so any size check against it is
+    always true and silently discards a perfectly good dataset.
+    """
+    dataset = getattr(scanner.set_data, "_dataset", None) or {}
+    ratings = dataset.get("card_ratings") or {}
+    count = 0
+    for card in ratings.values():
+        stats = (card.get(constants.DATA_FIELD_DECK_COLORS) or {}).get(
+            constants.FILTER_OPTION_ALL_DECKS
+        ) or {}
+        if (stats.get(constants.DATA_FIELD_GIHWR) or 0) > 0:
+            count += 1
+    return count
 
 
 @dataclass
@@ -67,6 +97,82 @@ class DraftSnapshot:
         if self.is_drafting:
             return f"Pack {self.pack} Pick {self.pick}"
         return "Waiting for draft..."
+
+
+def bind_dataset(scanner, configuration=None) -> bool:
+    """
+    Attach the ratings dataset matching the event currently being drafted.
+
+    Without this the scanner still resolves names, types and mana costs from
+    the local card database, so the table and the mana curve look right while
+    every win rate, advisor score and wheel chance sits at zero. Mirrors what
+    main.load_data does after its deep scan.
+    """
+    event_set, event_type = scanner.retrieve_current_limited_event()
+    if not event_set:
+        return False
+
+    marker = f"[{event_set.upper()}]"
+    candidates = [
+        (label, path)
+        for label, path in (scanner.retrieve_data_sources() or {}).items()
+        if marker in label.upper() and isinstance(path, str) and os.path.exists(path)
+    ]
+    if not candidates:
+        logger.warning("No local dataset found for %s", event_set)
+        return False
+
+    def rank(item):
+        """
+        Matching only on the set code is not enough. On MSH it picked
+        ContenderDraft (Top), a file holding three cards, and every win rate
+        came out at zero. Prefer the event actually being played, and the
+        all-players sample over the top-players one, which is far smaller.
+        """
+        label = item[0].upper()
+        exact_event = event_type and event_type.upper() in label
+        all_players = "(ALL)" in label
+        return (not exact_event, not all_players, label)
+
+    candidates.sort(key=rank)
+
+    best = None
+    for label, path in candidates[:MAX_DATASETS_TRIED]:
+        scanner.retrieve_set_data(path)
+        usable = _rated_card_count(scanner)
+        if best is None or usable > best[0]:
+            best = (usable, label, path)
+        if usable >= MINIMUM_RATED_CARDS:
+            break
+
+    usable, label, path = best
+    # retrieve_set_data replaces whatever was loaded, so if the last file tried
+    # was not the best one the scanner is currently holding the wrong dataset.
+    if path != candidates[0][1] or usable != _rated_card_count(scanner):
+        scanner.retrieve_set_data(path)
+
+    if configuration is not None:
+        configuration.card_data.latest_dataset = os.path.basename(path)
+    logger.info("Dataset bound to %s %s: %s (%d rated cards)",
+                event_set, event_type, label, usable)
+    if not usable:
+        logger.warning("No win rate data in any %s dataset yet", event_set)
+    return usable > 0
+
+
+def rebuild_draft(scanner, configuration=None) -> bool:
+    """
+    Re-read the log from byte zero and restore a draft already in progress.
+
+    Order matters: the event has to be identified before its dataset can be
+    picked, and the dataset has to be in place before the picks are replayed,
+    otherwise the cards come back without statistics.
+    """
+    scanner.clear_draft(True)
+    scanner.draft_start_search()
+    bound = bind_dataset(scanner, configuration)
+    scanner.draft_data_search()
+    return bound
 
 
 def take_raw_snapshot(scanner, blocking: bool = False) -> Optional[dict]:

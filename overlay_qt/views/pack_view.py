@@ -53,9 +53,23 @@ COL_SCORE, COL_NAME, COL_MANA, COL_GIHWR, COL_ALSA, COL_IWD, COL_WHEEL, COL_CAST
 
 
 def _stats(card, deck_filter):
-    """Per-archetype ratings, falling back to the all-decks bucket."""
+    """
+    Per-archetype ratings, with the all-decks bucket filling the gaps.
+
+    Once the pool is large enough the filter switches from "All Decks" to a
+    colour pair, and archetype samples are far sparser: the key exists but
+    holds 0.0 for most cards. Falling back only when the key is missing left
+    two thirds of a real MSH booster showing a win rate of zero, for cards
+    that do have a perfectly good overall number.
+    """
     colors = card.get(constants.DATA_FIELD_DECK_COLORS, {}) or {}
-    return colors.get(deck_filter) or colors.get(constants.FILTER_OPTION_ALL_DECKS) or {}
+    overall = colors.get(constants.FILTER_OPTION_ALL_DECKS) or {}
+    specific = colors.get(deck_filter) or {}
+    if not specific or specific is overall:
+        return overall
+    merged = dict(overall)
+    merged.update({key: value for key, value in specific.items() if value})
+    return merged
 
 
 class PackTableModel(QAbstractTableModel):
