@@ -31,7 +31,7 @@ from src.log_scanner import ArenaScanner
 
 from overlay_qt import prefs
 from overlay_qt.bridge import DraftBridge
-from overlay_qt.state import rebuild_draft
+from overlay_qt.state import read_submitted_deck, rebuild_draft
 from overlay_qt.views.advisor_view import AdvisorPanel
 from overlay_qt.views.card_preview import CardPreview
 from overlay_qt.views.deck_view import DeckView
@@ -231,6 +231,7 @@ class OverlayWindow(QMainWindow):
         self._footer = footer
         self._apply_opacity(self.prefs["opacity"])
 
+        self.configuration = configuration
         self.bridge = DraftBridge(scanner, configuration, parent=self)
         self.bridge.snapshot_ready.connect(self.on_snapshot)
         self.bridge.status_changed.connect(self.status_label.setText)
@@ -379,6 +380,28 @@ class OverlayWindow(QMainWindow):
     def _on_decks_ready(self, decks):
         active = self._snapshot.active_filter if self._snapshot else None
         self.deck_view.set_decks(decks, active)
+        self._load_submitted_deck()
+
+    def _load_submitted_deck(self):
+        """
+        What Arena has on record for this event, for the comparison view.
+
+        Only available once the deck is submitted: during the build Arena
+        reports an empty MainDeck, so there is nothing to follow live.
+        """
+        if self._snapshot is None:
+            return
+        entries = read_submitted_deck(
+            self.log_worker_path(), self._snapshot.event_string
+        )
+        self.deck_view.set_submitted_deck(entries, self._lookup_card)
+
+    def log_worker_path(self):
+        return self.configuration.settings.arena_log_location
+
+    def _lookup_card(self, card_id):
+        cards = self.bridge.scanner.set_data.get_data_by_id([str(card_id)])
+        return cards[0] if cards else None
 
     def _on_card_hovered(self, card):
         self.preview.show_card(card, QCursor.pos())

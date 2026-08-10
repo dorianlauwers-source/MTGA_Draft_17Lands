@@ -11,8 +11,10 @@ front ends.
 Nothing here mutates upstream state, so upstream can keep evolving underneath.
 """
 
+import json
 import logging
 import os
+import re
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
@@ -207,6 +209,51 @@ def suggest_decks(snapshot, configuration) -> Dict[str, Any]:
         progress_callback=lambda *args, **kwargs: None,
         dataset_name=getattr(configuration.card_data, "latest_dataset", None),
     )
+
+
+SUBMITTED_DECK_TAIL_BYTES = 8 * 1024 * 1024
+
+
+def read_submitted_deck(log_path: str, event_name: str) -> List[tuple]:
+    """
+    The deck Arena has on record for this event, as [(card_id, quantity)].
+
+    Arena only publishes a limited deck once it has been submitted: while you
+    are still building, the Courses payload reports CurrentModule DeckSelect
+    and an empty MainDeck. So this can confirm what you ended up playing, but
+    it can never follow the build card by card.
+    """
+    if not log_path or not event_name or not os.path.exists(log_path):
+        return []
+
+    try:
+        size = os.path.getsize(log_path)
+        with open(log_path, "r", encoding="utf-8", errors="replace") as handle:
+            handle.seek(max(0, size - SUBMITTED_DECK_TAIL_BYTES))
+            raw = handle.read()
+    except OSError:
+        logger.debug("Could not read %s", log_path, exc_info=True)
+        return []
+
+    decoder = json.JSONDecoder()
+    best: List[tuple] = []
+    for match in re.finditer(r'\{"Courses":\[', raw):
+        try:
+            payload, _ = decoder.raw_decode(raw[match.start():])
+        except ValueError:
+            continue
+        for course in payload.get("Courses") or []:
+            if course.get("InternalEventName") != event_name:
+                continue
+            entries = (course.get("CourseDeck") or {}).get("MainDeck") or []
+            deck = [
+                (str(item["cardId"]), int(item.get("quantity", 1)))
+                for item in entries
+                if isinstance(item, dict) and "cardId" in item
+            ]
+            if deck:
+                best = deck          # later payloads win
+    return best
 
 
 def take_raw_snapshot(scanner, blocking: bool = False) -> Optional[dict]:
