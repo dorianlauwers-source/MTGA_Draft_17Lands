@@ -19,7 +19,8 @@ from PyQt6.QtCore import QObject, QRunnable, QThreadPool, QTimer, pyqtSignal
 
 from src.ui.orchestrator import DraftOrchestrator
 
-from overlay_qt.state import build_snapshot, rebuild_draft, take_raw_snapshot
+from overlay_qt.state import (build_snapshot, rebuild_draft, suggest_decks,
+                              take_raw_snapshot)
 
 logger = logging.getLogger(__name__)
 
@@ -72,6 +73,23 @@ class _RescanWorker(QRunnable):
             self.signals.finished.emit(None)
 
 
+class _DeckWorker(QRunnable):
+    """Runs the upstream deck builder off the GUI thread."""
+
+    def __init__(self, snapshot, configuration):
+        super().__init__()
+        self.snapshot = snapshot
+        self.configuration = configuration
+        self.signals = _WorkerSignals()
+
+    def run(self):
+        try:
+            self.signals.finished.emit(suggest_decks(self.snapshot, self.configuration))
+        except Exception as error:
+            logger.exception("Deck suggestion failed")
+            self.signals.failed.emit(str(error))
+
+
 class DraftBridge(QObject):
     """
     Owns the upstream orchestrator and turns it into Qt signals.
@@ -82,6 +100,7 @@ class DraftBridge(QObject):
 
     snapshot_ready = pyqtSignal(object)
     status_changed = pyqtSignal(str)
+    decks_ready = pyqtSignal(object)
     error = pyqtSignal(str)
 
     def __init__(self, scanner, configuration, parent=None):
@@ -188,6 +207,13 @@ class DraftBridge(QObject):
         self.status_changed.emit("Relecture du log...")
         worker = _RescanWorker(self.scanner, self.orchestrator, self.configuration)
         worker.signals.finished.connect(lambda _: self._on_rescan_done())
+        self._control_pool.start(worker)
+
+    def build_decks(self, snapshot):
+        """Suggest 40-card decks from the pool. Cheap enough to redo on demand."""
+        worker = _DeckWorker(snapshot, self.configuration)
+        worker.signals.finished.connect(self.decks_ready)
+        worker.signals.failed.connect(self._on_failure)
         self._control_pool.start(worker)
 
     def _on_rescan_done(self):

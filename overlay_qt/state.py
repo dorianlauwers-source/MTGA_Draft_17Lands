@@ -175,6 +175,40 @@ def rebuild_draft(scanner, configuration=None) -> bool:
     return bound
 
 
+MINIMUM_POOL_FOR_DECK = 15
+
+
+def suggest_decks(snapshot, configuration) -> Dict[str, Any]:
+    """
+    Ask the upstream builder for complete 40-card decks from the drafted pool.
+
+    It runs four strategies in parallel (strict castability, capped splash,
+    curve-weighted and colour-blind best cards), computes a mana base from the
+    coloured pip counts, then scores each candidate with a 10,000 game Monte
+    Carlo simulation that penalises colour screw and flood. No language model
+    is involved: the result is reproducible.
+
+    src.card_logic has to be imported first. It and deck_builder import each
+    other, and reaching deck_builder first raises ImportError on
+    GLOBAL_DECK_CACHE. Upstream only escapes this through the order its own
+    UI happens to import things.
+    """
+    if snapshot is None or len(snapshot.taken_cards or []) < MINIMUM_POOL_FOR_DECK:
+        return {}
+
+    import src.card_logic  # noqa: F401  (import order matters, see above)
+    from src.advisor.deck_builder import suggest_deck
+
+    return suggest_deck(
+        snapshot.taken_cards,
+        snapshot.metrics,
+        configuration,
+        event_type=snapshot.event_type or "PremierDraft",
+        progress_callback=lambda *args, **kwargs: None,
+        dataset_name=getattr(configuration.card_data, "latest_dataset", None),
+    )
+
+
 def take_raw_snapshot(scanner, blocking: bool = False) -> Optional[dict]:
     """
     Grab every field we need in one critical section.

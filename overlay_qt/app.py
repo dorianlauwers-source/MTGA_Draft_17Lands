@@ -33,6 +33,7 @@ from overlay_qt.bridge import DraftBridge
 from overlay_qt.state import rebuild_draft
 from overlay_qt.views.advisor_view import AdvisorPanel
 from overlay_qt.views.card_preview import CardPreview
+from overlay_qt.views.deck_view import DeckView
 from overlay_qt.views.info_strip import InfoStrip
 from overlay_qt.views.pack_view import PackView
 from overlay_qt.views.pool_view import PoolView
@@ -170,8 +171,11 @@ class OverlayWindow(QMainWindow):
         self.tabs = QTabWidget()
         self.pack_view = PackView()
         self.pool_view = PoolView()
+        self.deck_view = DeckView()
         self.tabs.addTab(self.pack_view, "Booster")
         self.tabs.addTab(self.pool_view, "Pool")
+        self.tabs.addTab(self.deck_view, "Deck")
+        self.tabs.currentChanged.connect(self._on_tab_changed)
         layout.addWidget(self.tabs, 1)
 
         # Child of the central widget, not a top-level window: Wayland refuses
@@ -183,6 +187,8 @@ class OverlayWindow(QMainWindow):
         self.pack_view.card_left.connect(self.preview.hide_card)
         self.pool_view.card_hovered.connect(self._on_card_hovered)
         self.pool_view.card_left.connect(self.preview.hide_card)
+        self.deck_view.card_hovered.connect(self._on_card_hovered)
+        self.deck_view.card_left.connect(self.preview.hide_card)
         self.advisor.card_hovered.connect(self._on_name_hovered)
         self.advisor.card_left.connect(self.preview.hide_card)
 
@@ -216,11 +222,14 @@ class OverlayWindow(QMainWindow):
         self.bridge = DraftBridge(scanner, configuration, parent=self)
         self.bridge.snapshot_ready.connect(self.on_snapshot)
         self.bridge.status_changed.connect(self.status_label.setText)
+        self.bridge.decks_ready.connect(self._on_decks_ready)
         self.bridge.error.connect(lambda msg: self.status_label.setText(f"Erreur : {msg}"))
         self.bridge.start()
 
         self._drag_position = None
         self._mode = None
+        self._snapshot = None
+        self._decks_stale = True
 
         self.arena_timer = QTimer(self)
         if daemon_mode:
@@ -236,6 +245,8 @@ class OverlayWindow(QMainWindow):
             self.event_label.setText(
                 f"{snapshot.event_set} {snapshot.event_type}".strip()
             )
+        self._snapshot = snapshot
+        self._decks_stale = True
         self._cards_by_name = {
             card.get(constants.DATA_FIELD_NAME): card
             for card in list(snapshot.pack_cards or []) + list(snapshot.taken_cards or [])
@@ -287,6 +298,25 @@ class OverlayWindow(QMainWindow):
         self.status_label.setText("Relecture du log, jusqu'à 30 s...")
         self.bridge.full_rescan()
 
+    def _on_tab_changed(self, index):
+        """Build the decks the first time the Deck tab is looked at."""
+        if self.tabs.widget(index) is self.deck_view:
+            self._request_decks()
+
+    def _request_decks(self):
+        if not self._decks_stale or self._snapshot is None:
+            return
+        if len(self._snapshot.taken_cards or []) < 15:
+            self.deck_view.set_decks({}, self._snapshot.active_filter)
+            return
+        self._decks_stale = False
+        self.deck_view.set_pending()
+        self.bridge.build_decks(self._snapshot)
+
+    def _on_decks_ready(self, decks):
+        active = self._snapshot.active_filter if self._snapshot else None
+        self.deck_view.set_decks(decks, active)
+
     def _on_card_hovered(self, card):
         self.preview.show_card(card, QCursor.pos())
 
@@ -309,7 +339,8 @@ class OverlayWindow(QMainWindow):
             self.tabs.setCurrentIndex(0)
         elif not drafting and self._mode != "build":
             self._mode = "build"
-            self.tabs.setCurrentIndex(1)
+            self.tabs.setCurrentWidget(self.deck_view)
+            self._request_decks()
 
     # --- daemon ---------------------------------------------------------
 
