@@ -544,6 +544,126 @@ def build_scanner(configuration, log_path=None):
     return scanner
 
 
+# =============================================================================
+#  Installation : service utilisateur systemd et entree de menu
+# =============================================================================
+
+SERVICE_NAME = "mtga-overlay-qt.service"
+DESKTOP_NAME = "mtga-overlay-qt.desktop"
+
+SERVICE_UNIT = """[Unit]
+Description=Overlay MTG Arena (Qt6)
+Documentation=file://{project}/README.overlay.md
+After=default.target
+
+[Service]
+Type=simple
+# WorkingDirectory matters: upstream derives BASE_DIR from the current
+# directory when not frozen, so Sets/, Temp/ and Logs/ would otherwise land
+# wherever systemd happened to start us.
+WorkingDirectory={project}
+ExecStart={python} -m overlay_qt.app --daemon
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=default.target
+"""
+
+DESKTOP_ENTRY = """[Desktop Entry]
+Type=Application
+Name=MTGA Draft Overlay
+Comment=Overlay de draft pour MTG Arena
+Exec={python} -m overlay_qt.app
+Path={project}
+Icon=applications-games
+Terminal=false
+Categories=Game;
+"""
+
+
+def _project_root():
+    return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
+def _write(path, content):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as handle:
+        handle.write(content)
+    return path
+
+
+def install_service():
+    """
+    Install a user service that follows the session.
+
+    Not Steam launch options: under Flatpak Steam those run inside the
+    pressure-vessel container, where neither the host Python nor PyQt6 exists.
+    A user service on the host side works whatever the launcher, and --daemon
+    keeps the window hidden until Arena actually appears.
+    """
+    import subprocess
+
+    project = _project_root()
+    fields = {"python": sys.executable, "project": project}
+
+    unit = _write(
+        os.path.expanduser(f"~/.config/systemd/user/{SERVICE_NAME}"),
+        SERVICE_UNIT.format(**fields),
+    )
+    desktop = _write(
+        os.path.expanduser(f"~/.local/share/applications/{DESKTOP_NAME}"),
+        DESKTOP_ENTRY.format(**fields),
+    )
+    print(f"Service    : {unit}")
+    print(f"Menu       : {desktop}")
+
+    for command in (
+        ["systemctl", "--user", "daemon-reload"],
+        ["systemctl", "--user", "enable", "--now", SERVICE_NAME],
+    ):
+        try:
+            result = subprocess.run(command, capture_output=True, text=True, timeout=30)
+            if result.returncode:
+                print(f"  {' '.join(command)} -> {result.stderr.strip()}", file=sys.stderr)
+                return 1
+        except (OSError, subprocess.SubprocessError) as error:
+            print(f"  {' '.join(command)} a echoue : {error}", file=sys.stderr)
+            return 1
+
+    print("\nActif. L'overlay apparaitra au lancement d'Arena et disparaitra a sa fermeture.")
+    print(f"Journal    : journalctl --user -u {SERVICE_NAME} -f")
+    print(f"Desactiver : systemctl --user disable --now {SERVICE_NAME}")
+    return 0
+
+
+def uninstall_service():
+    import subprocess
+
+    for command in (
+        ["systemctl", "--user", "disable", "--now", SERVICE_NAME],
+        ["systemctl", "--user", "daemon-reload"],
+    ):
+        try:
+            subprocess.run(command, capture_output=True, text=True, timeout=30)
+        except (OSError, subprocess.SubprocessError):
+            pass
+
+    for path in (
+        os.path.expanduser(f"~/.config/systemd/user/{SERVICE_NAME}"),
+        os.path.expanduser(f"~/.local/share/applications/{DESKTOP_NAME}"),
+    ):
+        if os.path.exists(path):
+            try:
+                os.remove(path)
+                print(f"Supprime : {path}")
+            except OSError as error:
+                print(f"Suppression impossible : {error}", file=sys.stderr)
+                return 1
+    print("Desinstalle.")
+    return 0
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description="Overlay Qt6 pour les drafts MTG Arena")
     parser.add_argument("-f", "--file", help="Chemin vers Player.log")
@@ -553,7 +673,20 @@ def main(argv=None):
         help="Masque la fenêtre tant qu'Arena n'est pas lancé",
     )
     parser.add_argument("--debug", action="store_true", help="Journalisation détaillée")
+    parser.add_argument(
+        "--install-service",
+        action="store_true",
+        help="Installe le service utilisateur systemd et l'entrée de menu",
+    )
+    parser.add_argument(
+        "--uninstall-service", action="store_true", help="Retire le service"
+    )
     args = parser.parse_args(argv)
+
+    if args.install_service:
+        return install_service()
+    if args.uninstall_service:
+        return uninstall_service()
 
     logging.basicConfig(
         level=logging.DEBUG if args.debug else logging.INFO,
