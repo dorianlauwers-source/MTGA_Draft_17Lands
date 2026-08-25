@@ -215,8 +215,8 @@ correctifs, sans notre code Qt, pour une pull request propre.
 QT_QPA_PLATFORM=offscreen .venv/bin/python -m pytest tests/ -q
 ```
 
-**728 tests** au total, dont **56** ajoutés par nous : découverte du log Linux,
-garde msgcat, chaîne complète du log jusqu'au tableau, liste à cocher,
+**734 tests** au total, dont **57** ajoutés par nous : découverte du log Linux,
+garde msgcat, chaîne complète du log jusqu'au tableau, préférences, liste à cocher,
 comparaison de decks, Sealed, détection des logs détaillés.
 
 Les tests amont ne sont pas modifiés : leur moteur étant intact, toute
