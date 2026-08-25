@@ -364,3 +364,29 @@ def build_snapshot(scanner, configuration, raw: Optional[dict] = None,
         tier_data=raw["tier_data"],
         deck_metrics=get_deck_metrics(raw["taken_cards"]),
     )
+
+
+def detailed_logs_enabled(log_path: str):
+    """
+    Whether Arena is writing plugin-support logs, or None if unknown.
+
+    Arena stamps "DETAILED LOGS: ENABLED" or "DISABLED" near the top of every
+    session. With it disabled no draft data is written at all: no Draft.Notify,
+    no DraftPack, no CardsInPack. Nothing downstream can recover from that, so
+    the overlay has to say so rather than sit there looking broken.
+
+    The setting does not follow the account across installs. Enabling it on a
+    Flatpak Steam install leaves a native Steam install still disabled.
+    """
+    if not log_path or not os.path.exists(log_path):
+        return None
+    try:
+        with open(log_path, "r", encoding="utf-8", errors="replace") as handle:
+            head = handle.read(64 * 1024)
+    except OSError:
+        return None
+
+    marker = head.rfind("DETAILED LOGS:")
+    if marker < 0:
+        return None
+    return "ENABLED" in head[marker:marker + 40].upper()

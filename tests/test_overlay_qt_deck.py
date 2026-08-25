@@ -233,3 +233,52 @@ class TestSealed:
 def test_submitted_deck_reader_survives_a_missing_log():
     assert read_submitted_deck("", "Sealed_DSK") == []
     assert read_submitted_deck(tempfile.gettempdir() + "/nope.log", "x") == []
+
+
+class TestDetailedLogsDetection:
+    """
+    Arena writes no draft data at all when plugin-support logging is off, and
+    the setting does not follow the account between installs: enabling it on a
+    Flatpak Steam install leaves a native Steam install disabled. Detecting it
+    is the difference between an explanation and an overlay that looks broken.
+    """
+
+    def _log(self, tmp_path, marker):
+        path = tmp_path / "Player.log"
+        path.write_text(
+            "Unity Player log\n" + marker + "\n[UnityCrossThreadLogger]Client.SceneChange {}\n",
+            encoding="utf-8",
+        )
+        return str(path)
+
+    def test_enabled_is_detected(self, tmp_path):
+        from overlay_qt.state import detailed_logs_enabled
+
+        assert detailed_logs_enabled(self._log(tmp_path, "DETAILED LOGS: ENABLED")) is True
+
+    def test_disabled_is_detected(self, tmp_path):
+        from overlay_qt.state import detailed_logs_enabled
+
+        assert detailed_logs_enabled(self._log(tmp_path, "DETAILED LOGS: DISABLED")) is False
+
+    def test_unknown_when_the_marker_is_absent(self, tmp_path):
+        from overlay_qt.state import detailed_logs_enabled
+
+        assert detailed_logs_enabled(self._log(tmp_path, "nothing here")) is None
+
+    def test_unknown_when_the_log_is_missing(self, tmp_path):
+        from overlay_qt.state import detailed_logs_enabled
+
+        assert detailed_logs_enabled(str(tmp_path / "absent.log")) is None
+        assert detailed_logs_enabled("") is None
+
+    def test_the_last_marker_wins(self, tmp_path):
+        """Arena stamps one per session; a relaunch appends a fresh line."""
+        from overlay_qt.state import detailed_logs_enabled
+
+        path = tmp_path / "Player.log"
+        path.write_text(
+            "DETAILED LOGS: DISABLED\nsession one\nDETAILED LOGS: ENABLED\nsession two\n",
+            encoding="utf-8",
+        )
+        assert detailed_logs_enabled(str(path)) is True

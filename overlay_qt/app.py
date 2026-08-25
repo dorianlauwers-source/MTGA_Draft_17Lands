@@ -31,7 +31,8 @@ from src.log_scanner import ArenaScanner
 
 from overlay_qt import prefs
 from overlay_qt.bridge import DraftBridge
-from overlay_qt.state import read_submitted_deck, rebuild_draft
+from overlay_qt.state import (detailed_logs_enabled, read_submitted_deck,
+                              rebuild_draft)
 from overlay_qt.views.advisor_view import AdvisorPanel
 from overlay_qt.views.card_preview import CardPreview
 from overlay_qt.views.deck_view import DeckView
@@ -177,6 +178,18 @@ class OverlayWindow(QMainWindow):
         )
         layout.addWidget(header)
 
+        # Without detailed logs Arena writes no draft data at all, so the
+        # overlay would sit there looking broken with nothing to explain it.
+        self.warning_label = QLabel()
+        self.warning_label.setWordWrap(True)
+        self.warning_label.setTextFormat(Qt.TextFormat.RichText)
+        self.warning_label.setStyleSheet(
+            "background: #8e44ad; color: white; padding: 6px; font-size: 12px;"
+            " font-weight: bold;"
+        )
+        self.warning_label.hide()
+        layout.addWidget(self.warning_label)
+
         # The advisor is the answer to "what do I take", so it sits at the top,
         # not off to one side where it needs looking for.
         self.advisor = AdvisorPanel()
@@ -238,6 +251,7 @@ class OverlayWindow(QMainWindow):
         self.bridge.decks_ready.connect(self._on_decks_ready)
         self.bridge.error.connect(lambda msg: self.status_label.setText(f"Erreur : {msg}"))
         self.bridge.start()
+        self._check_detailed_logs()
 
         self._drag_position = None
         self._mode = None
@@ -296,6 +310,26 @@ class OverlayWindow(QMainWindow):
         button.clicked.connect(slot)
         return button
 
+    def _check_detailed_logs(self):
+        """
+        Warn when Arena is not writing plugin-support logs.
+
+        The setting does not follow the account between installs: enabling it
+        on Flatpak Steam leaves a native Steam install disabled, and the
+        overlay then has nothing whatsoever to read.
+        """
+        enabled = detailed_logs_enabled(self.configuration.settings.arena_log_location)
+        if enabled is False:
+            self.warning_label.setText(
+                "Logs détaillés DÉSACTIVÉS dans cette installation d'Arena.<br>"
+                "Aucune donnée de draft n'est écrite.<br>"
+                "Arena &rarr; roue crantée &rarr; Compte &rarr; "
+                "<i>Detailed Logs (Plugin Support)</i>, puis relancez le jeu."
+            )
+            self.warning_label.show()
+        else:
+            self.warning_label.hide()
+
     def reload_log(self):
         """
         Re-read the whole Player.log from the start.
@@ -309,6 +343,7 @@ class OverlayWindow(QMainWindow):
         """
         self.reload_button.setEnabled(False)
         self.status_label.setText("Relecture du log, jusqu'à 30 s...")
+        self._check_detailed_logs()
         self.bridge.full_rescan()
 
     # --- appearance ------------------------------------------------------
