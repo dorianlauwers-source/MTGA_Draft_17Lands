@@ -130,6 +130,7 @@ class OverlayWindow(QMainWindow):
         self.prefs = prefs.load()
         self.resize(self.prefs["width"], self.prefs["height"])
         self.setMinimumWidth(MIN_OVERLAY_WIDTH)
+        self._restore_position()
 
         central = QWidget()
         self.setCentralWidget(central)
@@ -207,6 +208,7 @@ class OverlayWindow(QMainWindow):
         self.tabs.addTab(self.pack_view, "Booster")
         self.tabs.addTab(self.pool_view, "Pool")
         self.tabs.addTab(self.deck_view, "Deck")
+        self.pack_view.set_hidden_columns(self.prefs.get("hidden_columns"))
         self.tabs.currentChanged.connect(self._on_tab_changed)
         layout.addWidget(self.tabs, 1)
 
@@ -257,6 +259,7 @@ class OverlayWindow(QMainWindow):
         self._mode = None
         self._snapshot = None
         self._decks_stale = True
+        self._decks_pool_size = -1
 
         self.arena_timer = QTimer(self)
         if daemon_mode:
@@ -273,7 +276,12 @@ class OverlayWindow(QMainWindow):
                 f"{snapshot.event_set} {snapshot.event_type}".strip()
             )
         self._snapshot = snapshot
-        self._decks_stale = True
+        # Only worth rebuilding when the pool actually changed: suggest_deck
+        # runs four builders and a Monte Carlo simulation per candidate.
+        pool_size = len(snapshot.taken_cards or [])
+        if pool_size != self._decks_pool_size:
+            self._decks_pool_size = pool_size
+            self._decks_stale = True
         self._cards_by_name = {
             card.get(constants.DATA_FIELD_NAME): card
             for card in list(snapshot.pack_cards or []) + list(snapshot.taken_cards or [])
@@ -284,6 +292,10 @@ class OverlayWindow(QMainWindow):
         self.pool_view.update_pool(snapshot)
         self.tabs.setTabText(1, f"Pool ({len(snapshot.taken_cards or [])})")
         self._apply_mode(snapshot)
+        # Keep the deck in step with the pool while the tab is being looked at,
+        # rather than freezing on whatever it held when it was opened.
+        if self.tabs.currentWidget() is self.deck_view:
+            self._request_decks()
 
         taken = len(snapshot.taken_cards or [])
         colours = snapshot.active_filter
@@ -309,6 +321,26 @@ class OverlayWindow(QMainWindow):
         )
         button.clicked.connect(slot)
         return button
+
+    def _restore_position(self):
+        """
+        Put the window back where it was, when the platform allows it.
+
+        Wayland hands placement to the compositor: move() is silently ignored
+        and QWidget.pos() reports what Qt intended rather than where the window
+        is. Restoring there is impossible from inside the application, so we
+        skip it instead of writing a value that would only ever be fiction.
+        """
+        if not self._position_is_ours():
+            return
+        x, y = self.prefs.get("x"), self.prefs.get("y")
+        if x is not None and y is not None:
+            self.move(x, y)
+
+    @staticmethod
+    def _position_is_ours() -> bool:
+        application = QApplication.instance()
+        return bool(application) and application.platformName() != "wayland"
 
     def _check_detailed_logs(self):
         """
@@ -508,6 +540,9 @@ class OverlayWindow(QMainWindow):
     def closeEvent(self, event):
         self.prefs["width"] = self.width()
         self.prefs["height"] = self.height()
+        self.prefs["hidden_columns"] = self.pack_view.hidden_columns()
+        if self._position_is_ours():
+            self.prefs["x"], self.prefs["y"] = self.pos().x(), self.pos().y()
         prefs.save(self.prefs)
         self.preview.hide_card()
         self.bridge.stop()
@@ -681,6 +716,11 @@ def main(argv=None):
     parser.add_argument(
         "--uninstall-service", action="store_true", help="Retire le service"
     )
+    parser.add_argument(
+        "--x11",
+        action="store_true",
+        help="Forcer XWayland, seul moyen de retrouver la position de la fenêtre",
+    )
     args = parser.parse_args(argv)
 
     if args.install_service:
@@ -693,6 +733,12 @@ def main(argv=None):
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
     signal.signal(signal.SIGINT, signal.SIG_DFL)
+
+    if args.x11:
+        # Wayland refuses to let an application place its own top-level
+        # surface, so the saved position can only be honoured under XWayland.
+        # The trade is losing native Wayland rendering.
+        os.environ["QT_QPA_PLATFORM"] = "xcb"
 
     configuration, _ = read_configuration()
     scanner = build_scanner(configuration, args.file)

@@ -266,8 +266,7 @@ class PackView(QTreeView):
         # column you turned on can always be turned back off.
         header.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         header.customContextMenuRequested.connect(self._show_column_menu)
-        for column in DEFAULT_HIDDEN:
-            self.setColumnHidden(column, True)
+        self.set_hidden_columns(None)
 
         # Hover preview rather than click-to-freeze.
         self.setMouseTracking(True)
@@ -294,6 +293,17 @@ class PackView(QTreeView):
         menu.addAction("Tout afficher").triggered.connect(self._show_all_columns)
         menu.addAction("Vue compacte").triggered.connect(self._compact_columns)
         menu.exec(self.header().mapToGlobal(position))
+
+    def hidden_columns(self):
+        """Indices currently hidden, for persisting the user's choice."""
+        return [i for i in range(len(COLUMNS)) if self.isColumnHidden(i)]
+
+    def set_hidden_columns(self, columns):
+        """None restores the compact default rather than showing everything."""
+        wanted = set(DEFAULT_HIDDEN if columns is None else columns)
+        wanted -= MANDATORY_COLUMNS
+        for index in range(len(COLUMNS)):
+            self.setColumnHidden(index, index in wanted)
 
     def _show_all_columns(self):
         for index in range(len(COLUMNS)):

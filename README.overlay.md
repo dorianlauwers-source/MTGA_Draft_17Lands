@@ -47,6 +47,7 @@ cd ~/mgta/MTGA_Draft_17Lands
 | `--daemon` | Masqué tant qu'Arena n'est pas lancé |
 | `-f <chemin>` | Forcer un `Player.log` précis |
 | `--debug` | Journalisation détaillée |
+| `--x11` | Forcer XWayland, seul moyen de retrouver la position de la fenêtre |
 | `--install-service` / `--uninstall-service` | Service systemd et entrée de menu |
 
 > **Ne jamais lancer avec `sudo`.** Root prendrait possession de `Sets/`,
@@ -104,7 +105,18 @@ Colonne étroite (340 px par défaut), sans cadre, toujours au-dessus, transluci
 | Clic droit sur l'entête du tableau | Ajouter **et retirer** des colonnes |
 | Survol d'une carte | Aperçu de l'image, disparaît en sortant |
 
-Largeur, hauteur et opacité sont mémorisées entre deux lancements.
+Largeur, hauteur, opacité et **choix des colonnes** sont mémorisés entre deux
+lancements, dans `Temp/overlay_qt_prefs.json`.
+
+La **position** de la fenêtre ne peut pas l'être sous Wayland : le compositeur
+seul décide du placement, `move()` est ignoré et `pos()` renvoie ce que Qt
+croyait faire, pas où la fenêtre se trouve. Nous refusons donc d'enregistrer une
+valeur qui serait une fiction. Deux solutions si cela vous gêne :
+
+- une règle KWin, *Paramètres du système → Gestion des fenêtres → Règles*, en
+  mémorisant la position pour cette fenêtre ;
+- lancer avec `--x11`, où la position est enregistrée et restaurée normalement,
+  au prix du rendu Wayland natif.
 
 ### Les trois onglets
 
@@ -203,7 +215,7 @@ correctifs, sans notre code Qt, pour une pull request propre.
 QT_QPA_PLATFORM=offscreen .venv/bin/python -m pytest tests/ -q
 ```
 
-**715 tests** au total, dont **43** ajoutés par nous : découverte du log Linux,
+**728 tests** au total, dont **56** ajoutés par nous : découverte du log Linux,
 garde msgcat, chaîne complète du log jusqu'au tableau, liste à cocher,
 comparaison de decks, Sealed, détection des logs détaillés.
 
@@ -214,11 +226,8 @@ régression de leur côté signalerait une erreur de la nôtre.
 
 ## Limites connues
 
-- La **position** de la fenêtre n'est pas mémorisée, seulement la taille et
-  l'opacité.
-- Le **choix des colonnes** n'est pas conservé entre deux lancements.
-- Les **suggestions de deck** ne se rafraîchissent qu'à l'ouverture de l'onglet
-  ou en fin de draft, pas à chaque pick.
+- La **position** de la fenêtre n'est pas mémorisée sous Wayland, limitation du
+  protocole et non de l'application. Contournements ci-dessus.
 - **Aucun envoi de deck vers Arena** n'est possible : Arena n'offre pas d'import
   en événement limité et ne publie le deck qu'une fois soumis. D'où la liste à
   cocher plutôt qu'une automatisation qui serait de toute façon non autorisée.
