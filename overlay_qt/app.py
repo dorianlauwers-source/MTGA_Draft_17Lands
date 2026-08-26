@@ -42,6 +42,13 @@ from overlay_qt.views.pool_view import PoolView
 
 logger = logging.getLogger(__name__)
 
+# Identity presented to the compositor. On Wayland the app_id comes from
+# desktopFileName, and without it the window reports something generic like
+# "python3": a KWin rule cannot target it, which is what makes "keep above"
+# unreliable when another window is clicked.
+APPLICATION_NAME = "MTGA Draft Overlay"
+DESKTOP_FILE_NAME = "mtga-overlay-qt"
+
 ARENA_PROCESS = "MTGA.exe"
 ARENA_POLL_MS = 5000
 
@@ -672,6 +679,95 @@ def install_service():
     return 0
 
 
+KWIN_RULE_ID = "mtga-overlay-qt-keep-above"
+
+
+def install_kwin_rule():
+    """
+    Ask KWin to keep the overlay above other windows, for good.
+
+    Wayland gives stacking to the compositor: WindowStaysOnTopHint is a
+    request, and a game raising itself wins over it. The keep-above toggle in
+    the window menu is per-window and transient, and our window is frameless
+    so it has no window menu to begin with. A rule matching the app_id is the
+    only thing that survives clicking on Arena.
+
+    Needs the app_id to be stable, which is why the application sets
+    desktopFileName; without it the window reports something generic and the
+    rule would match every Python program.
+    """
+    import configparser
+    import subprocess
+
+    path = os.path.expanduser("~/.config/kwinrulesrc")
+    parser = configparser.RawConfigParser()
+    parser.optionxform = str
+    parser.read(path, encoding="utf-8")
+
+    if not parser.has_section("General"):
+        parser.add_section("General")
+    existing = [r for r in (parser.get("General", "rules", fallback="") or "").split(",") if r]
+
+    if KWIN_RULE_ID not in existing:
+        existing.append(KWIN_RULE_ID)
+    parser.set("General", "rules", ",".join(existing))
+    parser.set("General", "count", str(len(existing)))
+
+    if not parser.has_section(KWIN_RULE_ID):
+        parser.add_section(KWIN_RULE_ID)
+    for key, value in {
+        "Description": "MTGA Draft Overlay: keep above",
+        "above": "true",
+        "aboverule": "2",            # 2 = Force, the compositor stops arbitrating
+        "wmclass": DESKTOP_FILE_NAME,
+        "wmclasscomplete": "false",
+        "wmclassmatch": "1",         # 1 = exact match on the app_id
+    }.items():
+        parser.set(KWIN_RULE_ID, key, value)
+
+    with open(path, "w", encoding="utf-8") as handle:
+        parser.write(handle, space_around_delimiters=False)
+    print(f"Regle ecrite : {path}  [{KWIN_RULE_ID}]")
+
+    try:
+        subprocess.run(["qdbus", "org.kde.KWin", "/KWin", "reconfigure"],
+                       capture_output=True, timeout=15)
+        print("KWin rechargé.")
+    except (OSError, subprocess.SubprocessError):
+        print("Rechargez KWin manuellement, ou reconnectez-vous.", file=sys.stderr)
+
+    print("L'overlay doit maintenant rester au-dessus d'Arena, meme au clic.")
+    return 0
+
+
+def uninstall_kwin_rule():
+    import configparser
+    import subprocess
+
+    path = os.path.expanduser("~/.config/kwinrulesrc")
+    parser = configparser.RawConfigParser()
+    parser.optionxform = str
+    parser.read(path, encoding="utf-8")
+
+    remaining = [
+        r for r in (parser.get("General", "rules", fallback="") or "").split(",")
+        if r and r != KWIN_RULE_ID
+    ]
+    parser.set("General", "rules", ",".join(remaining))
+    parser.set("General", "count", str(len(remaining)))
+    parser.remove_section(KWIN_RULE_ID)
+    with open(path, "w", encoding="utf-8") as handle:
+        parser.write(handle, space_around_delimiters=False)
+
+    try:
+        subprocess.run(["qdbus", "org.kde.KWin", "/KWin", "reconfigure"],
+                       capture_output=True, timeout=15)
+    except (OSError, subprocess.SubprocessError):
+        pass
+    print("Regle KWin retiree.")
+    return 0
+
+
 def uninstall_service():
     import subprocess
 
@@ -717,6 +813,14 @@ def main(argv=None):
         "--uninstall-service", action="store_true", help="Retire le service"
     )
     parser.add_argument(
+        "--install-kwin-rule",
+        action="store_true",
+        help="Force KWin à garder l'overlay au-dessus des autres fenêtres",
+    )
+    parser.add_argument(
+        "--uninstall-kwin-rule", action="store_true", help="Retire la règle KWin"
+    )
+    parser.add_argument(
         "--x11",
         action="store_true",
         help="Forcer XWayland, seul moyen de retrouver la position de la fenêtre",
@@ -727,6 +831,10 @@ def main(argv=None):
         return install_service()
     if args.uninstall_service:
         return uninstall_service()
+    if args.install_kwin_rule:
+        return install_kwin_rule()
+    if args.uninstall_kwin_rule:
+        return uninstall_kwin_rule()
 
     logging.basicConfig(
         level=logging.DEBUG if args.debug else logging.INFO,
@@ -744,6 +852,9 @@ def main(argv=None):
     scanner = build_scanner(configuration, args.file)
 
     app = QApplication(sys.argv[:1])
+    app.setApplicationName(APPLICATION_NAME)
+    app.setApplicationDisplayName(APPLICATION_NAME)
+    app.setDesktopFileName(DESKTOP_FILE_NAME)
     app.setQuitOnLastWindowClosed(not args.daemon)
     window = OverlayWindow(scanner, configuration, daemon_mode=args.daemon)
     if not args.daemon:

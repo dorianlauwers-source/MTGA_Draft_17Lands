@@ -48,11 +48,28 @@ cd ~/mgta/MTGA_Draft_17Lands
 | `-f <chemin>` | Forcer un `Player.log` précis |
 | `--debug` | Journalisation détaillée |
 | `--x11` | Forcer XWayland, seul moyen de retrouver la position de la fenêtre |
+| `--install-kwin-rule` / `--uninstall-kwin-rule` | Garder l'overlay au-dessus d'Arena, même au clic |
 | `--install-service` / `--uninstall-service` | Service systemd et entrée de menu |
 
 > **Ne jamais lancer avec `sudo`.** Root prendrait possession de `Sets/`,
 > `Temp/`, `Logs/` et `Debug/`, qui deviendraient inaccessibles à votre compte.
 > Réparation : `sudo chown -R "$USER":"$USER" {Debug,Sets,Temp,Logs}`
+
+### Rester au-dessus d'Arena
+
+```bash
+.venv/bin/python -m overlay_qt.app --install-kwin-rule
+```
+
+Sous Wayland, l'empilement des fenêtres appartient au compositeur :
+`WindowStaysOnTopHint` n'est qu'une demande, et un jeu qui se met au premier
+plan l'emporte. Le « Keep above » du menu de fenêtre est volatil, et notre
+fenêtre étant sans cadre elle n'a de toute façon pas ce menu.
+
+La commande pose une règle KWin permanente en **Force**, ciblée sur l'`app_id`
+`mtga-overlay-qt`. C'est pour cela que l'application déclare son
+`desktopFileName` : sans lui elle se présenterait sous un nom générique et la
+règle s'appliquerait à tous les programmes Python.
 
 ### Préalable indispensable dans Arena
 
