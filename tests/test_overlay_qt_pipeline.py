@@ -354,3 +354,18 @@ class TestDatasetRebinding:
         instance = bridge_module.DraftBridge(scanner, config)
         instance._rebind_if_event_changed()
         assert started == []
+
+    def test_a_second_draft_of_the_same_event_rebinds(self, bridge):
+        """
+        Two QuickDrafts of the same set share an event string. Keying the
+        re-bind on the name alone skipped the second one, leaving whatever
+        the upstream set-code match had loaded.
+        """
+        instance, scanner, started = bridge
+        scanner.event_string = "QuickDraft_HOB_20260820"
+        scanner.current_transaction_id = "6c473c0a-4350-4499-a7c5-3db0a103b1a7"
+        instance._rebind_if_event_changed()
+        instance._binding = False
+        scanner.current_transaction_id = "11111111-2222-3333-4444-555555555555"
+        instance._rebind_if_event_changed()
+        assert len(started) == 2

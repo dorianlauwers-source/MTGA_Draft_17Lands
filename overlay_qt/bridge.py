@@ -28,6 +28,21 @@ logger = logging.getLogger(__name__)
 POLL_INTERVAL_MS = 100
 
 
+def _draft_key(scanner):
+    """
+    Identifies the draft whose dataset is loaded, or None when idle.
+
+    The event name alone is not enough. Playing a second QuickDraft of the
+    same set reuses the same event string, so keying on it would skip the
+    re-bind and leave whatever the upstream set-code match had loaded. Arena
+    issues a fresh transaction id per draft, so pair the two.
+    """
+    event = getattr(scanner, "event_string", "") or ""
+    if not event:
+        return None
+    return (event, str(getattr(scanner, "current_transaction_id", "") or ""))
+
+
 class _WorkerSignals(QObject):
     finished = pyqtSignal(object)
     failed = pyqtSignal(str)
@@ -165,9 +180,9 @@ class DraftBridge(QObject):
         # snapshot thread, otherwise a reload waits for the current refresh.
         self._control_pool = QThreadPool(self)
         self._control_pool.setMaxThreadCount(1)
-        # Which event the loaded dataset belongs to. Seeded from what the
-        # cold start already bound, so joining nothing re-binds nothing.
-        self._bound_event = getattr(scanner, "event_string", "") or None
+        # Which draft the loaded dataset belongs to. Seeded from what the cold
+        # start already bound, so joining nothing re-binds nothing.
+        self._bound_event = _draft_key(scanner)
         self._binding = False
 
         self.orchestrator = DraftOrchestrator(
@@ -215,7 +230,7 @@ class DraftBridge(QObject):
         came out at 0.0, measured. bind_dataset picks on the event type too,
         so it has to run again once the event is known.
         """
-        event = getattr(self.scanner, "event_string", "") or None
+        event = _draft_key(self.scanner)
         if not event or event == self._bound_event or self._binding:
             return
         self._bound_event = event
@@ -303,7 +318,7 @@ class DraftBridge(QObject):
     def _on_rescan_done(self):
         # switch_draft_log and rebuild_draft both bind on their own; record it
         # so the drain does not immediately bind the same event a second time.
-        self._bound_event = getattr(self.scanner, "event_string", "") or None
+        self._bound_event = _draft_key(self.scanner)
         # If the rescan turned up nothing new the orchestrator never queues a
         # REFRESH, so ask for one explicitly rather than leave a stale message.
         self.request_refresh()
