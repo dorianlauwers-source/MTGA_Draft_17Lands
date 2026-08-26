@@ -121,6 +121,7 @@ Colonne étroite (340 px par défaut), sans cadre, toujours au-dessus, transluci
 | Coin bas-droit | Redimensionner |
 | **–** | Réduire dans la barre des tâches |
 | Clic sur le nom de l'événement | Choisir le draft à suivre : le log en cours, ou un draft déjà terminé |
+| Même menu, sous-menu **Supprimer** | Effacer un draft enregistré, avec confirmation |
 | Clic droit sur l'entête du tableau | Ajouter **et retirer** des colonnes |
 | Survol d'une carte | Aperçu de l'image, disparaît en sortant |
 

@@ -15,7 +15,7 @@ import pytest
 
 pytest.importorskip("PyQt6", reason="Qt overlay tests need PyQt6")
 
-from PyQt6.QtWidgets import QApplication  # noqa: E402
+from PyQt6.QtWidgets import QApplication, QLabel  # noqa: E402
 
 from overlay_qt import prefs  # noqa: E402
 from overlay_qt.views.pack_view import (  # noqa: E402
@@ -134,3 +134,84 @@ class TestColumnChoice:
         assert COL_SCORE not in hidden
         assert COL_NAME not in hidden
         assert MANDATORY_COLUMNS == {COL_SCORE, COL_NAME}
+
+
+class TestDraftDeletion:
+    """
+    Recorded draft logs are several megabytes each, so removing them has to be
+    possible; it is also not undoable, and the live log belongs to Arena and
+    must never be a candidate.
+    """
+
+    @pytest.fixture
+    def window(self, qt_app, tmp_path):
+        from overlay_qt.app import OverlayWindow
+
+        live = tmp_path / "Player.log"
+        live.write_text("DETAILED LOGS: ENABLED\n", encoding="utf-8")
+        recorded = tmp_path / "DraftLog_TST_PremierDraft_abc.log"
+        recorded.write_text("x" * 2048, encoding="utf-8")
+
+        # Bypass __init__: the real one needs a scanner, a dataset and a bridge.
+        win = OverlayWindow.__new__(OverlayWindow)
+        win._live_log = str(live)
+        win._followed_log = str(recorded)
+        win.status_label = QLabel()
+        win.switched_to = []
+        win._switch_draft = lambda path, label: win.switched_to.append(path)
+        return win, str(live), str(recorded)
+
+    def test_the_live_log_is_never_deleted(self, window):
+        win, live, _ = window
+        win._delete_draft(live, "En cours")
+        assert os.path.exists(live), "Arena's own log must be untouchable"
+
+    def test_declining_keeps_the_file(self, window, monkeypatch):
+        from PyQt6.QtWidgets import QMessageBox
+
+        win, _, recorded = window
+        monkeypatch.setattr(
+            QMessageBox, "question",
+            staticmethod(lambda *a, **k: QMessageBox.StandardButton.No),
+        )
+        win._delete_draft(recorded, "TST")
+        assert os.path.exists(recorded)
+
+    def test_confirming_removes_it(self, window, monkeypatch):
+        from PyQt6.QtWidgets import QMessageBox
+
+        win, _, recorded = window
+        monkeypatch.setattr(
+            QMessageBox, "question",
+            staticmethod(lambda *a, **k: QMessageBox.StandardButton.Yes),
+        )
+        win._delete_draft(recorded, "TST")
+        assert not os.path.exists(recorded)
+        assert "supprimé" in win.status_label.text()
+
+    def test_deleting_what_is_being_viewed_falls_back_to_live(self, window, monkeypatch):
+        """Reading a file that no longer exists would freeze on stale data."""
+        from PyQt6.QtWidgets import QMessageBox
+
+        win, live, recorded = window
+        monkeypatch.setattr(
+            QMessageBox, "question",
+            staticmethod(lambda *a, **k: QMessageBox.StandardButton.Yes),
+        )
+        win._delete_draft(recorded, "TST")
+        assert win.switched_to == [live]
+
+    def test_a_failure_is_reported_not_swallowed(self, window, monkeypatch):
+        from PyQt6.QtWidgets import QMessageBox
+
+        win, _, recorded = window
+        monkeypatch.setattr(
+            QMessageBox, "question",
+            staticmethod(lambda *a, **k: QMessageBox.StandardButton.Yes),
+        )
+        monkeypatch.setattr(
+            os, "remove",
+            lambda p: (_ for _ in ()).throw(OSError("read-only file system")),
+        )
+        win._delete_draft(recorded, "TST")
+        assert "impossible" in win.status_label.text()

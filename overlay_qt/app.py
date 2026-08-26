@@ -21,8 +21,8 @@ from datetime import datetime
 from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtGui import QCursor, QFont
 from PyQt6.QtWidgets import (QApplication, QHBoxLayout, QLabel, QMainWindow,
-                             QMenu, QPushButton, QSizeGrip, QTabWidget,
-                             QVBoxLayout, QWidget)
+                             QMenu, QMessageBox, QPushButton, QSizeGrip,
+                             QTabWidget, QVBoxLayout, QWidget)
 
 from src import constants
 from src.configuration import read_configuration
@@ -428,8 +428,57 @@ class OverlayWindow(QMainWindow):
                 action.triggered.connect(
                     lambda _checked, p=path, l=label: self._switch_draft(p, l)
                 )
+        recorded = [(l, p) for l, p in entries if p != self._live_log]
+        if recorded:
+            menu.addSeparator()
+            removal = menu.addMenu("Supprimer un draft")
+            for label, path in recorded:
+                try:
+                    size = os.path.getsize(path) // (1024 * 1024)
+                except OSError:
+                    size = 0
+                action = removal.addAction(f"{label.strip()}   ({size} Mo)")
+                action.triggered.connect(
+                    lambda _checked, p=path, l=label: self._delete_draft(p, l)
+                )
+
         menu.exec(self.event_button.mapToGlobal(
             self.event_button.rect().bottomLeft()))
+
+    def _delete_draft(self, path, label):
+        """
+        Remove a recorded draft log.
+
+        These files are the scanner's own recording of a draft, several
+        megabytes each, and deleting one is not undoable, hence the
+        confirmation. Only recorded drafts are ever offered: the live log
+        belongs to Arena and must never be touched.
+        """
+        if path == self._live_log:
+            return
+
+        answer = QMessageBox.question(
+            self,
+            "Supprimer ce draft ?",
+            f"{label.strip()}\n\nLe fichier sera supprimé définitivement.\n"
+            f"{os.path.basename(path)}",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+
+        try:
+            os.remove(path)
+        except OSError as error:
+            self.status_label.setText(f"Suppression impossible : {error}")
+            return
+
+        self.status_label.setText(f"Draft supprimé : {label.strip()}")
+        # Falling back to the live log matters: carrying on reading a file that
+        # no longer exists would leave the overlay frozen on stale data.
+        if os.path.realpath(path) == os.path.realpath(self._followed_log or ""):
+            self._switch_draft(self._live_log, "En cours (Arena)")
 
     def _switch_draft(self, path, label):
         """
