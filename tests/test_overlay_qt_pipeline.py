@@ -257,3 +257,100 @@ def test_sorting_keys_are_numeric(msh_scanner):
             assert isinstance(value, (int, float)), (
                 f"column {column} row {row} sorts on {type(value).__name__}"
             )
+
+
+class TestDatasetRebinding:
+    """
+    Joining a draft while the overlay is already running must load the ratings
+    file for the event actually being played.
+
+    The upstream orchestrator binds one itself, but sync_dataset_to_event takes
+    the first source whose label carries the set code, in dictionary order.
+    Measured on a real HOB PremierDraft it loaded HOB_TradSealed (45 rated
+    cards) and every win rate in the pack read 0.0. The bridge therefore
+    re-binds with the event-aware selection once the event is known.
+    """
+
+    @pytest.fixture
+    def bridge(self, tmp_path, monkeypatch):
+        from types import SimpleNamespace
+
+        from overlay_qt import bridge as bridge_module
+
+        log = tmp_path / "Player.log"
+        log.write_text("DETAILED LOGS: ENABLED\n", encoding="utf-8")
+
+        config = SimpleNamespace(
+            settings=SimpleNamespace(arena_log_location=str(log)),
+            card_data=SimpleNamespace(latest_dataset=""),
+        )
+        scanner = SimpleNamespace(event_string="", arena_file=str(log))
+
+        started = []
+        monkeypatch.setattr(bridge_module.QThreadPool, "start",
+                            lambda self, worker, *a: started.append(worker))
+
+        instance = bridge_module.DraftBridge(scanner, config)
+        return instance, scanner, started
+
+    def test_nothing_is_rebound_while_idle(self, bridge):
+        instance, _scanner, started = bridge
+        instance._rebind_if_event_changed()
+        assert started == [], "no event means nothing to bind"
+
+    def test_joining_a_draft_triggers_a_rebind(self, bridge):
+        from overlay_qt.bridge import _BindWorker
+
+        instance, scanner, started = bridge
+        scanner.event_string = "PremierDraft_HOB_20260820"
+        instance._rebind_if_event_changed()
+        assert len(started) == 1
+        assert isinstance(started[0], _BindWorker)
+
+    def test_the_same_event_is_not_rebound_twice(self, bridge):
+        instance, scanner, started = bridge
+        scanner.event_string = "PremierDraft_HOB_20260820"
+        instance._rebind_if_event_changed()
+        instance._binding = False           # first bind finished
+        instance._rebind_if_event_changed()
+        assert len(started) == 1, "re-reading a 25 MB dataset every tick"
+
+    def test_a_second_draft_rebinds_again(self, bridge):
+        instance, scanner, started = bridge
+        scanner.event_string = "PremierDraft_HOB_20260820"
+        instance._rebind_if_event_changed()
+        instance._binding = False
+        scanner.event_string = "QuickDraft_MSH_20260710"
+        instance._rebind_if_event_changed()
+        assert len(started) == 2
+
+    def test_a_bind_in_flight_is_not_duplicated(self, bridge):
+        instance, scanner, started = bridge
+        scanner.event_string = "PremierDraft_HOB_20260820"
+        instance._rebind_if_event_changed()
+        scanner.event_string = "QuickDraft_MSH_20260710"
+        instance._rebind_if_event_changed()   # previous one still running
+        assert len(started) == 1
+
+    def test_a_cold_start_that_already_bound_does_not_rebind(self, tmp_path, monkeypatch):
+        """rebuild_draft binds before the bridge exists; don't redo the work."""
+        from types import SimpleNamespace
+
+        from overlay_qt import bridge as bridge_module
+
+        log = tmp_path / "Player.log"
+        log.write_text("x", encoding="utf-8")
+        config = SimpleNamespace(
+            settings=SimpleNamespace(arena_log_location=str(log)),
+            card_data=SimpleNamespace(latest_dataset="HOB_PremierDraft_All_Data.json"),
+        )
+        scanner = SimpleNamespace(
+            event_string="PremierDraft_HOB_20260820", arena_file=str(log)
+        )
+        started = []
+        monkeypatch.setattr(bridge_module.QThreadPool, "start",
+                            lambda self, worker, *a: started.append(worker))
+
+        instance = bridge_module.DraftBridge(scanner, config)
+        instance._rebind_if_event_changed()
+        assert started == []

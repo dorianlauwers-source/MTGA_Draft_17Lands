@@ -19,8 +19,9 @@ from PyQt6.QtCore import QObject, QRunnable, QThreadPool, QTimer, pyqtSignal
 
 from src.ui.orchestrator import DraftOrchestrator
 
-from overlay_qt.state import (build_snapshot, rebuild_draft, suggest_decks,
-                              switch_draft_log, take_raw_snapshot)
+from overlay_qt.state import (bind_dataset, build_snapshot, rebuild_draft,
+                              suggest_decks, switch_draft_log,
+                              take_raw_snapshot)
 
 logger = logging.getLogger(__name__)
 
@@ -90,6 +91,32 @@ class _DeckWorker(QRunnable):
             self.signals.failed.emit(str(error))
 
 
+class _BindWorker(QRunnable):
+    """Re-binds the ratings dataset after the event changed, off the GUI thread."""
+
+    def __init__(self, scanner, configuration):
+        super().__init__()
+        self.scanner = scanner
+        self.configuration = configuration
+        self.signals = _WorkerSignals()
+
+    def run(self):
+        try:
+            with self.scanner.lock:
+                bind_dataset(self.scanner, self.configuration)
+            try:
+                from src.configuration import write_configuration
+
+                write_configuration(self.configuration)
+            except Exception:
+                logger.debug("Could not persist the dataset choice", exc_info=True)
+        except Exception as error:
+            logger.exception("Dataset re-binding failed")
+            self.signals.failed.emit(str(error))
+        finally:
+            self.signals.finished.emit(None)
+
+
 class _SwitchWorker(QRunnable):
     """Points the scanner at another log, off the GUI thread."""
 
@@ -138,6 +165,10 @@ class DraftBridge(QObject):
         # snapshot thread, otherwise a reload waits for the current refresh.
         self._control_pool = QThreadPool(self)
         self._control_pool.setMaxThreadCount(1)
+        # Which event the loaded dataset belongs to. Seeded from what the
+        # cold start already bound, so joining nothing re-binds nothing.
+        self._bound_event = getattr(scanner, "event_string", "") or None
+        self._binding = False
 
         self.orchestrator = DraftOrchestrator(
             scanner, configuration, refresh_callback=self._on_orchestrator_refresh
@@ -173,7 +204,34 @@ class DraftBridge(QObject):
         """
         self._refresh_pending = True
 
+    def _rebind_if_event_changed(self):
+        """
+        Bind the dataset that matches the event actually being played.
+
+        The orchestrator binds one itself when it sees a draft start, but
+        sync_dataset_to_event takes the first source whose label carries the
+        set code, in dictionary order. Joining a HOB PremierDraft that way
+        loaded HOB_TradSealed (45 rated cards) and every win rate in the pack
+        came out at 0.0, measured. bind_dataset picks on the event type too,
+        so it has to run again once the event is known.
+        """
+        event = getattr(self.scanner, "event_string", "") or None
+        if not event or event == self._bound_event or self._binding:
+            return
+        self._bound_event = event
+        self._binding = True
+        self.status_changed.emit("Chargement des statistiques...")
+        worker = _BindWorker(self.scanner, self.configuration)
+        worker.signals.finished.connect(lambda _: self._on_bind_done())
+        worker.signals.failed.connect(self._on_failure)
+        self._control_pool.start(worker)
+
+    def _on_bind_done(self):
+        self._binding = False
+        self.request_refresh()
+
     def _drain_queue(self):
+        self._rebind_if_event_changed()
         refresh = self._refresh_pending
         self._refresh_pending = False
 
@@ -243,6 +301,9 @@ class DraftBridge(QObject):
         self._control_pool.start(worker)
 
     def _on_rescan_done(self):
+        # switch_draft_log and rebuild_draft both bind on their own; record it
+        # so the drain does not immediately bind the same event a second time.
+        self._bound_event = getattr(self.scanner, "event_string", "") or None
         # If the rescan turned up nothing new the orchestrator never queues a
         # REFRESH, so ask for one explicitly rather than leave a stale message.
         self.request_refresh()
