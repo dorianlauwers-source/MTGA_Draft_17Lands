@@ -31,8 +31,8 @@ from src.log_scanner import ArenaScanner
 
 from overlay_qt import prefs
 from overlay_qt.bridge import DraftBridge
-from overlay_qt.state import (detailed_logs_enabled, read_submitted_deck,
-                              rebuild_draft)
+from overlay_qt.state import (detailed_logs_enabled, ensure_draft,
+                              read_submitted_deck, rebuild_draft)
 from overlay_qt.views.advisor_view import AdvisorPanel
 from overlay_qt.views.card_preview import CardPreview
 from overlay_qt.views.deck_view import DeckView
@@ -579,10 +579,10 @@ def build_scanner(configuration, log_path=None):
     )
     configuration.settings.arena_log_location = path
 
-    # Same sequence as main.load_data: identify the event, attach its ratings
-    # dataset, then replay the picks. Skipping it leaves every win rate and
-    # advisor score at zero even though the cards themselves resolve.
-    rebuild_draft(scanner, configuration)
+    # Catch up without discarding what the scanner restored from disk. A full
+    # rebuild here used to wipe the persisted draft, history included, which
+    # cannot be recovered once Arena has rotated the log.
+    ensure_draft(scanner, configuration)
     return scanner
 
 

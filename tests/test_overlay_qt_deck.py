@@ -282,3 +282,79 @@ class TestDetailedLogsDetection:
             encoding="utf-8",
         )
         assert detailed_logs_enabled(str(path)) is True
+
+
+class TestDraftPersistence:
+    """
+    ArenaScanner persists the whole draft, history included, and reloads it in
+    its constructor. That file is the only thing that survives a log rotation:
+    once Arena restarts, the per-pick events are gone from Player.log and only
+    the final CardPool remains, so a pool rebuilt from the log alone carries no
+    history and therefore no colour signals.
+
+    Rebuilding unconditionally at startup wiped that state and saved the empty
+    result over it, losing the history for good.
+    """
+
+    class _Scanner:
+        def __init__(self, event=("HOB", "QuickDraft"), taken=None, history=None):
+            self._event = event
+            self.taken_cards = list(taken or [])
+            self.draft_history = list(history or [])
+            self.event_string = "QuickDraft_HOB_20260820"
+            self.cleared = False
+            self.scanned = 0
+
+        def retrieve_current_limited_event(self):
+            return self._event
+
+        def clear_draft(self, full):
+            self.cleared = True
+            self.taken_cards = []
+            self.draft_history = []
+
+        def draft_start_search(self):
+            self.scanned += 1
+            return False
+
+        def draft_data_search(self):
+            self.scanned += 1
+            return False
+
+        def retrieve_data_sources(self):
+            return {}
+
+    def test_a_restored_draft_is_recognised(self):
+        from overlay_qt.state import has_restored_draft
+
+        assert has_restored_draft(
+            self._Scanner(taken=["1", "2"], history=[{"Pack": 1, "Pick": 1}])
+        )
+
+    def test_an_empty_scanner_is_not(self):
+        from overlay_qt.state import has_restored_draft
+
+        assert not has_restored_draft(self._Scanner(event=("", ""), taken=[]))
+        assert not has_restored_draft(self._Scanner(taken=[], history=[]))
+
+    def test_restored_state_is_never_cleared(self):
+        from overlay_qt.state import ensure_draft
+
+        scanner = self._Scanner(
+            taken=["1", "2", "3"],
+            history=[{"Pack": 1, "Pick": p} for p in range(1, 13)],
+        )
+        ensure_draft(scanner)
+
+        assert not scanner.cleared, "the persisted draft was thrown away"
+        assert len(scanner.taken_cards) == 3
+        assert len(scanner.draft_history) == 12
+        assert scanner.scanned >= 2, "it should still catch up on new picks"
+
+    def test_a_cold_start_does_rebuild(self):
+        """With nothing restored there is no history to protect."""
+        from overlay_qt.state import ensure_draft
+
+        scanner = self._Scanner(event=("", ""), taken=[])
+        ensure_draft(scanner)
+        assert scanner.cleared

@@ -186,6 +186,45 @@ def rebuild_draft(scanner, configuration=None) -> bool:
     return bound
 
 
+def has_restored_draft(scanner) -> bool:
+    """
+    Whether the scanner came back with a draft already in memory.
+
+    ArenaScanner persists the whole draft to Temp/active_draft_state.json on
+    every pick, history included, and reloads it in its constructor. That is
+    the only thing that survives a log rotation: once Arena restarts, the
+    per-pick events are gone from Player.log and only the final CardPool
+    remains, so a pool rebuilt from the log alone has no history and therefore
+    no colour signals.
+    """
+    event_set, _ = scanner.retrieve_current_limited_event()
+    if not event_set:
+        return False
+    return bool(scanner.taken_cards or scanner.draft_history)
+
+
+def ensure_draft(scanner, configuration=None) -> bool:
+    """
+    Bring the scanner up to date without throwing away what it restored.
+
+    Rebuilding from scratch on every start was destroying the persisted state
+    and then saving the empty result over it, losing the pick history for good.
+    Restored state is kept and merely caught up; the destructive rebuild is
+    reserved for a cold start or an explicit reload.
+    """
+    if has_restored_draft(scanner):
+        logger.info(
+            "Restored draft kept: %s, %d cards, %d picks in history",
+            scanner.event_string, len(scanner.taken_cards or []),
+            len(scanner.draft_history or []),
+        )
+        bind_dataset(scanner, configuration)
+        scanner.draft_start_search()
+        scanner.draft_data_search()
+        return True
+    return rebuild_draft(scanner, configuration)
+
+
 MINIMUM_POOL_FOR_DECK = 15
 
 
