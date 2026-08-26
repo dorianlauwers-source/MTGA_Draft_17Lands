@@ -119,6 +119,8 @@ Colonne étroite (340 px par défaut), sans cadre, toujours au-dessus, transluci
 | **◐** | Transparence par paliers |
 | **⟳** | Relire le log, reconstruit un draft déjà en cours (~30 s) |
 | Coin bas-droit | Redimensionner |
+| **–** | Réduire dans la barre des tâches |
+| Clic sur le nom de l'événement | Choisir le draft à suivre : le log en cours, ou un draft déjà terminé |
 | Clic droit sur l'entête du tableau | Ajouter **et retirer** des colonnes |
 | Survol d'une carte | Aperçu de l'image, disparaît en sortant |
 

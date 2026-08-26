@@ -20,7 +20,7 @@ from PyQt6.QtCore import QObject, QRunnable, QThreadPool, QTimer, pyqtSignal
 from src.ui.orchestrator import DraftOrchestrator
 
 from overlay_qt.state import (build_snapshot, rebuild_draft, suggest_decks,
-                              take_raw_snapshot)
+                              switch_draft_log, take_raw_snapshot)
 
 logger = logging.getLogger(__name__)
 
@@ -88,6 +88,27 @@ class _DeckWorker(QRunnable):
         except Exception as error:
             logger.exception("Deck suggestion failed")
             self.signals.failed.emit(str(error))
+
+
+class _SwitchWorker(QRunnable):
+    """Points the scanner at another log, off the GUI thread."""
+
+    def __init__(self, scanner, configuration, path):
+        super().__init__()
+        self.scanner = scanner
+        self.configuration = configuration
+        self.path = path
+        self.signals = _WorkerSignals()
+
+    def run(self):
+        try:
+            with self.scanner.lock:
+                switch_draft_log(self.scanner, self.path, self.configuration)
+        except Exception as error:
+            logger.exception("Draft log switch failed")
+            self.signals.failed.emit(str(error))
+        finally:
+            self.signals.finished.emit(None)
 
 
 class DraftBridge(QObject):
@@ -193,7 +214,12 @@ class DraftBridge(QObject):
     # --- passthrough for the UI -----------------------------------------
 
     def set_log_file(self, path):
-        self.orchestrator.set_file_and_scan(path)
+        """Switch logs on the control thread, dataset binding included."""
+        self.status_changed.emit("Bascule de draft...")
+        worker = _SwitchWorker(self.scanner, self.configuration, path)
+        worker.signals.finished.connect(lambda _: self._on_rescan_done())
+        worker.signals.failed.connect(self._on_failure)
+        self._control_pool.start(worker)
 
     def full_rescan(self):
         """

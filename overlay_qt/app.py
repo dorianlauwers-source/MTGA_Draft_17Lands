@@ -16,6 +16,7 @@ import logging
 import os
 import signal
 import sys
+from datetime import datetime
 
 from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtGui import QCursor, QFont
@@ -48,6 +49,8 @@ logger = logging.getLogger(__name__)
 # unreliable when another window is clicked.
 APPLICATION_NAME = "MTGA Draft Overlay"
 DESKTOP_FILE_NAME = "mtga-overlay-qt"
+
+NO_EVENT_LABEL = "choisir un draft  \u25be"
 
 ARENA_PROCESS = "MTGA.exe"
 ARENA_POLL_MS = 5000
@@ -150,12 +153,34 @@ class OverlayWindow(QMainWindow):
         header_layout = QHBoxLayout(header)
         header_layout.setContentsMargins(8, 3, 4, 3)
         header_layout.setSpacing(4)
+
+        # Two lines: at 340px wide the status and the event name were fighting
+        # for the same row and "Construction du deck" came out truncated.
+        title_column = QVBoxLayout()
+        title_column.setSpacing(0)
         self.title_label = QLabel("En attente d'un draft...")
         self.title_label.setFont(QFont("Sans Serif", 11, QFont.Weight.Bold))
-        self.event_label = QLabel("")
-        self.event_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-        header_layout.addWidget(self.title_label, 1)
-        header_layout.addWidget(self.event_label, 1)
+        self.event_button = QPushButton(NO_EVENT_LABEL)
+        self.event_button.setFlat(True)
+        self.event_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.event_button.setToolTip(
+            "Choisir le draft à suivre\n"
+            "Le log en cours, ou un draft déjà terminé"
+        )
+        self.event_button.setStyleSheet(
+            "QPushButton { background: transparent; color: #bdc3c7; border: none;"
+            " font-size: 10px; text-align: left; padding: 0px; }"
+            "QPushButton:hover { color: #ecf0f1; text-decoration: underline; }"
+        )
+        self.event_button.clicked.connect(self._show_draft_menu)
+        title_column.addWidget(self.title_label)
+        title_column.addWidget(self.event_button)
+        header_layout.addLayout(title_column, 1)
+
+        self.minimise_button = self._header_button(
+            "\u2013", "Réduire dans la barre des tâches", self.showMinimized
+        )
+        header_layout.addWidget(self.minimise_button)
 
         self.opacity_button = self._header_button(
             "◐",
@@ -278,10 +303,11 @@ class OverlayWindow(QMainWindow):
 
     def on_snapshot(self, snapshot):
         self.title_label.setText(snapshot.status_text)
-        if snapshot.event_set or snapshot.event_type:
-            self.event_label.setText(
-                f"{snapshot.event_set} {snapshot.event_type}".strip()
-            )
+        label = f"{snapshot.event_set} {snapshot.event_type}".strip()
+        # Always leave something to click: with no event the menu would be
+        # unreachable, and choosing a recorded draft is exactly what you want
+        # when the live log has nothing in it.
+        self.event_button.setText(f"{label}  \u25be" if label else NO_EVENT_LABEL)
         self._snapshot = snapshot
         # Only worth rebuilding when the pool actually changed: suggest_deck
         # runs four builders and a Monte Carlo simulation per candidate.
@@ -348,6 +374,65 @@ class OverlayWindow(QMainWindow):
     def _position_is_ours() -> bool:
         application = QApplication.instance()
         return bool(application) and application.platformName() != "wayland"
+
+    def available_drafts(self):
+        """
+        The live log plus any draft already recorded, most recent first.
+
+        ArenaScanner writes a DraftLog_<SET>_<EVENT>_<id>.log per draft, and
+        the orchestrator can be pointed at any of them, which is how upstream's
+        history dropdown works. Same idea, reached by clicking the event name.
+        """
+        entries = []
+        live = self.configuration.settings.arena_log_location
+        if live and os.path.exists(live):
+            entries.append(("\u25cf  En cours (Arena)", live))
+
+        folder = constants.DRAFT_LOG_FOLDER
+        recorded = []
+        if os.path.isdir(folder):
+            for name in os.listdir(folder):
+                if not (name.startswith("DraftLog_") and name.endswith(".log")):
+                    continue
+                path = os.path.join(folder, name)
+                try:
+                    recorded.append((os.path.getmtime(path), name, path))
+                except OSError:
+                    continue
+        recorded.sort(reverse=True)
+
+        for mtime, name, path in recorded:
+            parts = name[:-4].split("_")
+            card_set = parts[1] if len(parts) > 1 else "?"
+            event = parts[2] if len(parts) > 2 else "Draft"
+            when = datetime.fromtimestamp(mtime).strftime("%d/%m %H:%M")
+            entries.append((f"    {card_set} {event}  ({when})", path))
+        return entries
+
+    def _show_draft_menu(self):
+        menu = QMenu(self)
+        entries = self.available_drafts()
+        if not entries:
+            menu.addAction("Aucun draft disponible").setEnabled(False)
+        else:
+            current = self.configuration.settings.arena_log_location
+            for label, path in entries:
+                action = menu.addAction(label)
+                action.setCheckable(True)
+                action.setChecked(os.path.realpath(path) == os.path.realpath(current or ""))
+                action.triggered.connect(
+                    lambda _checked, p=path, l=label: self._switch_draft(p, l)
+                )
+        menu.exec(self.event_button.mapToGlobal(
+            self.event_button.rect().bottomLeft()))
+
+    def _switch_draft(self, path, label):
+        """Point the scanner at another log. The rest follows on its own."""
+        self.configuration.settings.arena_log_location = path
+        self.status_label.setText(f"Bascule vers {label.strip()}...")
+        self._decks_stale = True
+        self.bridge.set_log_file(path)
+        self._check_detailed_logs()
 
     def _check_detailed_logs(self):
         """

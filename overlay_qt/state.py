@@ -186,6 +186,30 @@ def rebuild_draft(scanner, configuration=None) -> bool:
     return bound
 
 
+def switch_draft_log(scanner, path, configuration=None) -> bool:
+    """
+    Follow a different log: the live one, or a draft already recorded.
+
+    The upstream file swap calls sync_dataset_to_event(), which matches on the
+    set code alone. That is the selection that picked ContenderDraft (Top) for
+    a QuickDraft event, a file with no win rates in it, so the whole table came
+    back at zero. Binding here reuses the event-aware selection instead.
+
+    Clearing is deliberate: this is a different draft, so keeping the previous
+    one would mix two pools.
+    """
+    scanner.set_arena_file(path)
+    try:
+        scanner.log_enable(False)
+    except Exception:
+        logger.debug("log_enable refused", exc_info=True)
+    scanner.clear_draft(True)
+    scanner.draft_start_search()
+    bound = bind_dataset(scanner, configuration)
+    scanner.draft_data_search()
+    return bound
+
+
 def has_restored_draft(scanner) -> bool:
     """
     Whether the scanner came back with a draft already in memory.
