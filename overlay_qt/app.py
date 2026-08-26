@@ -279,6 +279,11 @@ class OverlayWindow(QMainWindow):
         self._apply_opacity(self.prefs["opacity"])
 
         self.configuration = configuration
+        # arena_log_location means "the log Arena writes". Viewing a recorded
+        # draft must not repoint it, or the next start would keep following a
+        # draft that finished weeks ago.
+        self._live_log = configuration.settings.arena_log_location
+        self._followed_log = self._live_log
         self.bridge = DraftBridge(scanner, configuration, parent=self)
         self.bridge.snapshot_ready.connect(self.on_snapshot)
         self.bridge.status_changed.connect(self.status_label.setText)
@@ -384,7 +389,7 @@ class OverlayWindow(QMainWindow):
         history dropdown works. Same idea, reached by clicking the event name.
         """
         entries = []
-        live = self.configuration.settings.arena_log_location
+        live = self._live_log
         if live and os.path.exists(live):
             entries.append(("\u25cf  En cours (Arena)", live))
 
@@ -415,7 +420,7 @@ class OverlayWindow(QMainWindow):
         if not entries:
             menu.addAction("Aucun draft disponible").setEnabled(False)
         else:
-            current = self.configuration.settings.arena_log_location
+            current = self._followed_log
             for label, path in entries:
                 action = menu.addAction(label)
                 action.setCheckable(True)
@@ -427,8 +432,12 @@ class OverlayWindow(QMainWindow):
             self.event_button.rect().bottomLeft()))
 
     def _switch_draft(self, path, label):
-        """Point the scanner at another log. The rest follows on its own."""
-        self.configuration.settings.arena_log_location = path
+        """
+        View another log. Deliberately does not touch arena_log_location: that
+        setting is the live Arena log, and overwriting it made the overlay
+        follow a finished draft on every subsequent start.
+        """
+        self._followed_log = path
         self.status_label.setText(f"Bascule vers {label.strip()}...")
         self._decks_stale = True
         self.bridge.set_log_file(path)
@@ -442,7 +451,7 @@ class OverlayWindow(QMainWindow):
         on Flatpak Steam leaves a native Steam install disabled, and the
         overlay then has nothing whatsoever to read.
         """
-        enabled = detailed_logs_enabled(self.configuration.settings.arena_log_location)
+        enabled = detailed_logs_enabled(self._followed_log)
         if enabled is False:
             self.warning_label.setText(
                 "Logs détaillés DÉSACTIVÉS dans cette installation d'Arena.<br>"
@@ -551,12 +560,9 @@ class OverlayWindow(QMainWindow):
         if self._snapshot is None:
             return
         entries = read_submitted_deck(
-            self.log_worker_path(), self._snapshot.event_string
+            self._followed_log, self._snapshot.event_string
         )
         self.deck_view.set_submitted_deck(entries, self._lookup_card)
-
-    def log_worker_path(self):
-        return self.configuration.settings.arena_log_location
 
     def _lookup_card(self, card_id):
         cards = self.bridge.scanner.set_data.get_data_by_id([str(card_id)])
